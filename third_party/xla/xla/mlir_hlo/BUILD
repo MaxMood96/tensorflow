@@ -820,6 +820,7 @@ cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncToLLVM",
         "@llvm-project//mlir:FuncTransforms",
+        "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:GPUDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMCommonConversion",
@@ -1147,7 +1148,6 @@ cc_library(
     srcs = [
         "stablehlo_ext/transforms/chlo_recompose_ops.cpp",
         "stablehlo_ext/transforms/stablehlo_canonicalize_dynamism.cpp",
-        "stablehlo_ext/transforms/stablehlo_compatibility_expander.cpp",
         "stablehlo_ext/transforms/stablehlo_refine_shapes.cpp",
     ],
     hdrs = [

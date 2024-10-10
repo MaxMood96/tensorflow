@@ -753,6 +753,8 @@ cc_library(
         ":strcat",
         ":stringprintf",
         ":types",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
         "@local_tsl//tsl/platform:status",
     ],
 )
@@ -1085,6 +1087,7 @@ tf_cuda_library(
     deps = [
         "//tensorflow/core:lib",
         "@local_tsl//tsl/platform",
+        "@local_tsl//tsl/platform:dso_loader",
         "@local_xla//xla/stream_executor",
         "@local_xla//xla/stream_executor:dnn",
         "@local_xla//xla/stream_executor:platform_manager",
@@ -1107,6 +1110,7 @@ cc_library(
     ],
     features = ["-parse_headers"],
     deps = [
+        "@local_tsl//tsl/platform:dso_loader",
         "@local_xla//xla/stream_executor",
         "@local_xla//xla/stream_executor:dnn",
         "@local_xla//xla/stream_executor:platform_manager",

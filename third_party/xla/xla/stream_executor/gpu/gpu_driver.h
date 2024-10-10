@@ -64,13 +64,6 @@ class GpuDriver {
   // https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Driver_API_functions_supported_by_HIP.html#initialization
   static absl::Status Init();
 
-  // Creates a new CUDA/HIP stream associated with the given context via
-  // cuStreamCreate/hipStreamCreateWithFlags.
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__STREAM.html#group__CUDA__STREAM_1ga581f0c5833e21ded8b5a56594e243f4
-  // https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Driver_API_functions_supported_by_HIP.html#stream-management
-  static absl::StatusOr<GpuStreamHandle> CreateStream(Context* context,
-                                                      int priority = 0);
-
   // Destroys a CUDA/HIP stream associated with the given context.
   // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__STREAM.html#group__CUDA__STREAM_1g244c8833de4596bcd31a06cdf21ee758
   // https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Driver_API_functions_supported_by_HIP.html#stream-management
@@ -147,14 +140,6 @@ class GpuDriver {
   // previously registered.
   static bool HostUnregister(Context* context, void* location);
 
-  // Queries the priority range and returns the corresponding integer value via
-  // cuCtxGetStreamPriorityRange/hipDeviceGetStreamPriorityRange
-  //
-  // https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__CTX.html#group__CUDA__CTX_1g137920ab61a71be6ce67605b9f294091
-  // https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Driver_API_functions_supported_by_HIP.html#context-management
-  static int GetGpuStreamPriority(
-      Context* context, stream_executor::StreamPriority stream_priority);
-
   // Given a device ordinal, returns a device handle into the device outparam,
   // which must not be null.
   //
@@ -166,22 +151,6 @@ class GpuDriver {
   // device.
   static absl::Status GetDeviceName(GpuDeviceHandle device,
                                     std::string* device_name);
-
-  // Given a device to create a context for, returns a context handle into the
-  // context outparam, which must not be null.
-  //
-  // N.B. CUDA contexts are weird. They are implicitly associated with the
-  // calling thread. Current documentation on contexts and their influence on
-  // userspace processes is given here:
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__CTX.html#group__CUDA__CTX_1g65dc0012348bc84810e2103a40d8e2cf
-  static absl::Status CreateContext(int device_ordinal, GpuDeviceHandle device,
-                                    Context** context);
-
-  // Destroys the provided context via cuCtxDestroy.
-  // Don't do this while clients could still be using the context, per the docs
-  // bad things will happen.
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__CTX.html#group__CUDA__CTX_1g27a365aebb0eb548166309f58a1e8b8e
-  static void DestroyContext(Context* context);
 
   // Launches a CUDA/ROCm kernel via cuLaunchKernel/hipModuleLaunchKernel.
   // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__EXEC.html#group__CUDA__EXEC_1gb8f3dc3031b40da29d5f9a7139e52e15
@@ -440,46 +409,6 @@ class GpuDriver {
                                                   GpuGraphNodeHandle node,
                                                   GpuGraphHandle child);
 
-  // Loads ptx_contents with the CUDA driver's PTX JIT and stores the resulting
-  // handle in "module". Any error logs that are produced are logged internally.
-  // (supported on CUDA only)
-  static absl::Status LoadPtx(Context* context, const char* ptx_contents,
-                              GpuModuleHandle* module);
-
-  // Loads cubin_bytes with the CUDA driver's blob loading interface and stores
-  // the resulting handle in "module".
-  // (supported on CUDA only)
-  static absl::Status LoadCubin(Context* context, const char* cubin_bytes,
-                                GpuModuleHandle* module);
-
-  // Loads HSACO with the ROCM runtime and stores the resulting handle in
-  // "module". Any error logs that are produced are logged internally.
-  // (supported on ROCm only)
-  static absl::Status LoadHsaco(Context* context, const char* hsaco_contents,
-                                GpuModuleHandle* module);
-
-  // Retrieves a named kernel from a loaded module, and places the resulting
-  // handle into function (outparam) on success. Neither kernel_name nor
-  // function may be null. No ownership is taken of kernel_name.
-  static absl::Status GetModuleFunction(Context* context,
-                                        GpuModuleHandle module,
-                                        const char* kernel_name,
-                                        GpuFunctionHandle* function);
-
-  // Retrieves a named global/constant symbol from a loaded module, and returns
-  // a device pointer and size of the symbol on success. symbol_name may not be
-  // null. At least one of dptr or bytes should not be null. No ownership is
-  // taken of symbol_name.
-  static absl::Status GetModuleSymbol(Context* context, GpuModuleHandle module,
-                                      const char* symbol_name,
-                                      GpuDevicePtr* dptr, size_t* bytes);
-
-  // Unloads module from the current context via cuModuleUnload.
-  // TODO(leary) the documentation doesn't say what kind of disasters happen
-  // if you try to unload a module while its GpuFunctionHandles are in use.
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__MODULE.html#group__CUDA__MODULE_1g8ea3d716524369de3763104ced4ea57b
-  static void UnloadModule(Context* context, GpuModuleHandle module);
-
   // Performs a synchronous memset of the device memory segment via cuMemsetD8.
   // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__MEM.html#group__CUDA__MEM_1g6e582bf866e9e2fb014297bfaf354d7b
   static absl::Status SynchronousMemsetUint8(Context* context,
@@ -552,13 +481,6 @@ class GpuDriver {
                                         GpuStreamHandle stream,
                                         StreamCallback callback, void* data);
 
-  // Causes stream to wait for event to trigger before proceeding via
-  // cuStreamWaitEvent.
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__STREAM.html#axzz334nAXAhM
-  static absl::Status WaitStreamOnEvent(Context* context,
-                                        GpuStreamHandle stream,
-                                        GpuEventHandle event);
-
   // Blocks the calling thread until the operations enqueued onto stream have
   // been completed, via cuStreamSynchronize.
   //
@@ -569,12 +491,6 @@ class GpuDriver {
   // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__STREAM.html#group__CUDA__STREAM_1g15e49dd91ec15991eb7c0a741beb7dad
   static absl::Status SynchronizeStream(Context* context,
                                         GpuStreamHandle stream);
-
-  // Blocks the calling thread until the operations associated with the context
-  // have been completed, via cuCtxSynchronize.
-  //
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__CTX.html#group__CUDA__CTX_1g7a54725f28d34b8c6299f0c6ca579616
-  static absl::Status SynchronizeContext(Context* context);
 
   // Returns whether code in the from context can access memory in the to
   // context via cuDeviceCanAccessPeer.
@@ -591,19 +507,6 @@ class GpuDriver {
   // Enables peer access per CanEnablePeerAccess, via cuCtxEnablePeerAccess.
   // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__PEER__ACCESS.html#group__CUDA__PEER__ACCESS_1g0889ec6728e61c05ed359551d67b3f5a
   static absl::Status EnablePeerAccess(Context* from, Context* to);
-
-  // Returns the elapsed milliseconds between start and stop via
-  // cuEventElapsedTime.
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__EVENT.html#group__CUDA__EVENT_1gdfb1178807353bbcaa9e245da497cf97
-  static absl::StatusOr<float> GetEventElapsedTime(Context* context,
-                                                   GpuEventHandle start,
-                                                   GpuEventHandle stop);
-
-  // Records that an event occurred when execution reaches the current point in
-  // thestream via cuEventRecord.
-  // http://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__EVENT.html#group__CUDA__EVENT_1g95424d3be52c4eb95d83861b70fb89d1
-  static absl::Status RecordEvent(Context* context, GpuEventHandle event,
-                                  GpuStreamHandle stream);
 
   // -- Pointer-specific calls.
 

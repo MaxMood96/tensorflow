@@ -86,7 +86,7 @@ xla_cc_test(
     srcs = ["fusion_analysis_cache_test.cc"],
     deps = [
         ":fusion_analysis_cache",
-        "//xla/service:hlo_parser",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/service/gpu:gpu_device_info_for_tests",
         "//xla/service/gpu:hlo_fusion_analysis",
         "//xla/stream_executor:device_description",
@@ -796,6 +796,7 @@ cc_library(
         ":indexing_analysis",
         ":tiled_hlo_instruction_or_computation",
         "//xla:shape_util",
+        "//xla:util",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:gpu_fusible",
         "//xla/service/gpu:hlo_fusion_analysis",

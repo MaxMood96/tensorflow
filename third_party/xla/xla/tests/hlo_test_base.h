@@ -277,7 +277,7 @@ class HloTestBase : public ::testing::Test {
   absl::StatusOr<std::vector<Literal>> ExecuteReplicated(
       std::unique_ptr<HloModule> module,
       std::vector<std::vector<Literal*>> arguments, int64_t num_replicas,
-      bool run_hlo_passes);
+      bool run_hlo_passes, DeviceAssignment* device_assignment = nullptr);
 
   // Executes the given hlo module on two backends and compares results.
   //
@@ -508,9 +508,10 @@ class HloTestBase : public ::testing::Test {
   [[nodiscard]] std::vector<int> CompareInputs(const HloModule& module_0,
                                                const HloModule& module_1);
 
- private:
   // Creates or retrieves the allocator.
   se::DeviceMemoryAllocator* GetAllocator();
+
+ private:
   // Either an HloRunner or HloRunnerPjRt depending on if ShouldUsePjRt()
   std::unique_ptr<HloRunnerInterface> runner_;
   se::Platform* test_platform_;

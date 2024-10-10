@@ -75,7 +75,7 @@ cc_test(
         ":api_internal",
         ":graph_tools",
         ":lite_rt_model_init",
-        "//tensorflow/lite/experimental/lrt/test_data:test_data_util",
+        "//tensorflow/lite/experimental/lrt/test:common",
         "//tensorflow/lite/schema:schema_fbs",
         "@com_google_googletest//:gtest_main",
         "@flatbuffers//:runtime_cc",
@@ -104,7 +104,7 @@ cc_test(
         ":api_internal",
         ":graph_tools",
         ":model",
-        "//tensorflow/lite/experimental/lrt/test_data:test_data_util",
+        "//tensorflow/lite/experimental/lrt/test:common",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -120,4 +120,118 @@ cc_library(
         "//tensorflow/lite/c:c_api_types",
         "@llvm-project//llvm:Support",
     ],
+)
+
+cc_library(
+    name = "dynamic_loading",
+    srcs = ["dynamic_loading.cc"],
+    hdrs = ["dynamic_loading.h"],
+    linkopts = ["-ldl"],
+    deps = [
+        ":logging",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_c_api",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+cc_library(
+    name = "tensor_buffer",
+    srcs = [
+        "dmabuf_buffer.cc",
+        "fastrpc_buffer.cc",
+        "ion_buffer.cc",
+        "lite_rt_event.cc",
+        "lite_rt_tensor_buffer.cc",
+        "lite_rt_tensor_buffer_requirements.cc",
+        "tensor_buffer.cc",
+    ],
+    hdrs = [
+        "dmabuf_buffer.h",
+        "fastrpc_buffer.h",
+        "ion_buffer.h",
+        "tensor_buffer.h",
+    ],
+    deps = [
+        ":logging",
+        ":utils",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_c_api",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_tensor_buffer_c_api",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:node_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "tensor_buffer_test",
+    srcs = [
+        "tensor_buffer_test.cc",
+    ],
+    linkopts = select({
+        "//tensorflow:android": ["-landroid"],
+        "//conditions:default": [],
+    }),
+    tags = ["manual"],
+    deps = [
+        ":tensor_buffer",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_c_api",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_tensor_buffer_c_api",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "dispatch",
+    srcs = [
+        "lite_rt_dispatch.cc",
+    ],
+    hdrs = [
+    ],
+    deps = [
+        ":logging",
+        ":tensor_buffer",
+        ":utils",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_c_api",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_dispatch_c_api",
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_tensor_buffer_c_api",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:node_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "utils",
+    srcs = [
+        "utils.cc",
+    ],
+    hdrs = [
+        "utils.h",
+    ],
+    deps = [
+        "//tensorflow/lite/experimental/lrt/c:lite_rt_c_api",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "logging",
+    srcs = [
+        "logging.cc",
+    ],
+    hdrs = [
+        "logging.h",
+    ],
+    deps = ["//tensorflow/lite:minimal_logging"],
 )

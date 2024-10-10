@@ -334,7 +334,6 @@ xla_cc_binary(
     deps = [
         ":auto_sharding",
         "//xla/hlo/ir:hlo",
-        "//xla/service:hlo_parser",
         "//xla/tools:hlo_module_loader",
         "@com_google_absl//absl/status",
         "@local_tsl//tsl/platform:platform_port",
@@ -389,7 +388,6 @@ xla_cc_test(
         "//xla/service:buffer_value",
         "//xla/service:hlo_alias_analysis",
         "//xla/service:hlo_memory_scheduler",
-        "//xla/service:hlo_parser",
         "//xla/service:hlo_value",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
@@ -399,6 +397,7 @@ xla_cc_test(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest",

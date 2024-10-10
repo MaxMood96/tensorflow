@@ -23,7 +23,6 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
@@ -287,9 +286,8 @@ TEST_F(StatelessAutotunerTest,
           << "There is a cublas implementation for dot_bf16_bf16_f32 on Ampere";
       break;
     case se::CudaComputeCapability::HOPPER:
-      EXPECT_FALSE(hasCublasConfig(configs))
-          << "There is no cublas implementation for dot_bf16_bf16_f32 on "
-             "Hopper. That is why we don't want to fallback to cublas.";
+      EXPECT_TRUE(hasCublasConfig(configs))
+          << "There is a cublas implementation for dot_bf16_bf16_f32 on Hopper";
       break;
     default:
       // We don't know what to expect for other compute capabilities.
@@ -1062,61 +1060,6 @@ ENTRY wais {
 
 INSTANTIATE_TEST_SUITE_P(GemmFusionAutotunerConfigSweep,
                          GemmFusionAutotunerConfigTest, ::testing::Bool());
-
-TEST_F(StatelessAutotunerTest,
-       ExhaustiveAutotuningTunesNumberOfCtasFromHopper) {
-  const std::string kHloText = R"(
-HloModule test
-
-ENTRY main {
-  lhs = f32[5,1600] parameter(0)
-  rhs = f32[1600,10] parameter(1)
-  ROOT dot = f32[5,10] dot(lhs, rhs),
-      lhs_contracting_dims={1}, rhs_contracting_dims={0}
-})";
-  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
-  DebugOptions debug_options_with_exhaustive_autotuning =
-      GetDebugOptionsForTest();
-  debug_options_with_exhaustive_autotuning.set_xla_gpu_exhaustive_tiling_search(
-      true);
-
-  auto get_configs = [&](const se::CudaComputeCapability& cc,
-                         const DebugOptions& debug_options) {
-    return GetPossibleMatmulAutotuneTritonConfigs(
-               *Cast<HloDotInstruction>(
-                   module->entry_computation()->root_instruction()),
-               cc, GetToolkitVersion(), debug_options)
-        .value();
-  };
-
-  for (const auto& config :
-       get_configs(se::CudaComputeCapability::Ampere(),
-                   debug_options_with_exhaustive_autotuning)) {
-    // We do not tune the number of CTAs on Ampere...
-    EXPECT_EQ(config.num_ctas, 1);
-  }
-
-  absl::flat_hash_set<int> config_num_ctas;
-  for (const auto& config :
-       get_configs(se::CudaComputeCapability::Hopper(),
-                   debug_options_with_exhaustive_autotuning)) {
-    // ... but we do on Hopper...
-    config_num_ctas.insert(config.num_ctas);
-  }
-  EXPECT_GT(config_num_ctas.size(), 1);
-
-  DebugOptions debug_options_without_exhaustive_autotuning =
-      GetDebugOptionsForTest();
-  debug_options_without_exhaustive_autotuning
-      .set_xla_gpu_exhaustive_tiling_search(false);
-
-  for (const auto& config :
-       get_configs(se::CudaComputeCapability::Hopper(),
-                   debug_options_without_exhaustive_autotuning)) {
-    // ... except if exhaustive autotuning is disabled.
-    EXPECT_EQ(config.num_ctas, 1);
-  }
-}
 
 TEST_F(GemmFusionAutotunerTest, SplitKFLoatNormalization) {
   if (!GetCudaComputeCapability().IsAtLeastHopper()) {

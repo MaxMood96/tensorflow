@@ -524,6 +524,10 @@ AlgebraicSimplifierOptions LayoutInsensitiveAlgebraicSimplifierOptions(
   // GPU only supports canonical convolutions.
   layout_insensitive_algsimp_opts.set_supports_non_canonical_dots(false);
 
+  // On GPU it helps to reorder them so that the fused cuDNN kernel can be
+  // used.
+  layout_insensitive_algsimp_opts.set_enable_conv_add_multiply_reorder(true);
+
   // "slow" minmax means we propagate nan.
   layout_insensitive_algsimp_opts.set_minmax_propagate_nan(
       !hlo_module_config.debug_options().xla_gpu_enable_fast_min_max());
@@ -921,6 +925,12 @@ absl::Status RunCollectiveOptimizationPasses(
       /*enable_reduce_scatter=*/debug_options
           .xla_gpu_enable_while_loop_reduce_scatter_code_motion());
 
+  // Moves collectives' subsequent quantization before the collective to
+  // minimize data transfers.
+  collectives_pipeline.AddPass<CollectiveQuantizer>();
+  // Remove dead computations after collective quantization.
+  collectives_pipeline.AddPass<HloDCE>();
+
   if (!debug_options.xla_gpu_run_post_layout_collective_pipeliner()) {
     TF_RETURN_IF_ERROR(
         AddCollectivePipelinerPasses(debug_options, collectives_pipeline));
@@ -957,12 +967,6 @@ absl::Status RunCollectiveOptimizationPasses(
       {U16, U32}, {S16, S32}};
   collectives_pipeline.AddPass<AllReducePromotion>(ar_promoted_types);
   // Remove dead computations left over after ar/rs promotion.
-  collectives_pipeline.AddPass<HloDCE>();
-
-  // Moves collectives' subsequent quantization before the collective to
-  // minimize data transfers.
-  collectives_pipeline.AddPass<CollectiveQuantizer>();
-  // Remove dead computations after collective quantization.
   collectives_pipeline.AddPass<HloDCE>();
 
   // Run WhileLoopTripCountAnnotator after collective pipelining and before
@@ -1227,6 +1231,7 @@ absl::Status RunLayoutNormalizationPasses(
   opts.set_supports_non_canonical_dots(false);
   opts.set_is_layout_sensitive(true);
   opts.set_enable_conv_operand_swap(false);
+  opts.set_enable_conv_add_multiply_reorder(true);
   // "slow" minmax means we propagate nan.
   opts.set_minmax_propagate_nan(!debug_options.xla_gpu_enable_fast_min_max());
   opts.set_enable_unconditional_reduce_of_concat_replacement(false);
@@ -1430,6 +1435,7 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     opts.set_supports_non_canonical_dots(false);
     opts.set_is_layout_sensitive(true);
     opts.set_enable_conv_operand_swap(false);
+    opts.set_enable_conv_add_multiply_reorder(true);
     // "slow" minmax means we propagate nan.
     opts.set_minmax_propagate_nan(!debug_options.xla_gpu_enable_fast_min_max());
     opts.set_enable_unconditional_reduce_of_concat_replacement(false);

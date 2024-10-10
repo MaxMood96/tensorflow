@@ -1551,24 +1551,26 @@ void RemoveShardingsWhereSmallDimsShardedAcrossManyDevices(
 
 void ScaleCostsWithExecutionCounts(const int64_t execution_count,
                                    StrategyGroup& strategy_group) {
-  if (strategy_group.is_tuple) {
-    for (const auto& child : strategy_group.GetChildren()) {
-      ScaleCostsWithExecutionCounts(execution_count, *child);
+  auto scale_cost = [&execution_count](double& cost) {
+    if (cost < kInfinityCost - 1) {
+      cost *= execution_count;
     }
-  } else {
-    for (size_t sid = 0; sid < strategy_group.GetStrategies().size(); ++sid) {
-      ShardingStrategy& strategy = strategy_group.GetStrategy(sid);
-      strategy.compute_cost *= execution_count;
-      strategy.communication_cost *= execution_count;
-      for (auto i = 0; i < strategy.communication_resharding_costs.size();
-           ++i) {
-        for (auto j = 0; j < strategy.communication_resharding_costs[i].size();
+  };
+  auto scale_for_leaf = [&](StrategyGroup& leaf_strategy_group) {
+    for (int sid = 0; sid < leaf_strategy_group.GetStrategies().size(); ++sid) {
+      ShardingStrategy& strategy = leaf_strategy_group.GetStrategy(sid);
+      scale_cost(strategy.compute_cost);
+      scale_cost(strategy.communication_cost);
+      for (int i = 0; i < strategy.communication_resharding_costs.size(); ++i) {
+        for (int j = 0; j < strategy.communication_resharding_costs[i].size();
              ++j) {
-          strategy.communication_resharding_costs[i][j] *= execution_count;
+          scale_cost(strategy.communication_resharding_costs[i][j]);
         }
       }
     }
-  }
+  };
+
+  strategy_group.ForEachLeafStrategyGroup(scale_for_leaf);
 }
 
 std::unique_ptr<StrategyGroup> CreateElementwiseOperatorStrategies(
@@ -3421,10 +3423,15 @@ absl::flat_hash_set<const HloInstruction*> ComputeInstructionsToShard(
   for (HloInstruction* instruction : sequence.instructions()) {
     if (spmd::IsSPMDFullToShardShapeCustomCall(instruction)) {
       for (const HloInstruction* user : instruction->users()) {
-        if (spmd::IsSPMDShardToFullShapeCustomCall(user)) {
-          continue;
+        if (!spmd::IsSPMDShardToFullShapeCustomCall(user)) {
+          queue.push(user);
         }
-        queue.push(user);
+      }
+    } else if (spmd::IsSPMDShardToFullShapeCustomCall(instruction)) {
+      for (const HloInstruction* operand : instruction->operands()) {
+        if (!spmd::IsSPMDFullToShardShapeCustomCall(operand)) {
+          queue.push(operand);
+        }
       }
     }
   }
@@ -3442,30 +3449,27 @@ absl::flat_hash_set<const HloInstruction*> ComputeInstructionsToShard(
          instruction->called_computations()) {
       for (const HloInstruction* parameter :
            computation->parameter_instructions()) {
-        if (spmd::IsSPMDShardToFullShapeCustomCall(parameter) ||
-            spmd::IsSPMDFullToShardShapeCustomCall(parameter) ||
-            parameter == instruction || visited.contains(parameter)) {
-          continue;
+        if (!spmd::IsSPMDShardToFullShapeCustomCall(parameter) &&
+            !spmd::IsSPMDFullToShardShapeCustomCall(parameter) &&
+            parameter != instruction && !visited.contains(parameter)) {
+          queue.push(parameter);
         }
-        queue.push(parameter);
       }
     }
 
     for (const HloInstruction* user : instruction->users()) {
-      if (spmd::IsSPMDShardToFullShapeCustomCall(user) ||
-          spmd::IsSPMDFullToShardShapeCustomCall(user) ||
-          visited.contains(user)) {
-        continue;
+      if (!spmd::IsSPMDShardToFullShapeCustomCall(user) &&
+          !spmd::IsSPMDFullToShardShapeCustomCall(user) &&
+          !visited.contains(user)) {
+        queue.push(user);
       }
-      queue.push(user);
     }
     for (const HloInstruction* operand : instruction->operands()) {
-      if (spmd::IsSPMDShardToFullShapeCustomCall(operand) ||
-          spmd::IsSPMDFullToShardShapeCustomCall(operand) ||
-          operand == instruction || visited.contains(operand)) {
-        continue;
+      if (!spmd::IsSPMDShardToFullShapeCustomCall(operand) &&
+          !spmd::IsSPMDFullToShardShapeCustomCall(operand) &&
+          operand != instruction && !visited.contains(operand)) {
+        queue.push(operand);
       }
-      queue.push(operand);
     }
   }
 
@@ -3473,12 +3477,10 @@ absl::flat_hash_set<const HloInstruction*> ComputeInstructionsToShard(
   for (HloInstruction* instruction : sequence.instructions()) {
     if (!visited.contains(instruction) &&
         !spmd::IsSPMDFullToShardShapeCustomCall(instruction)) {
-      if (HloCollectiveInstruction::ClassOf(instruction)) {
-        LOG(FATAL) << "The module contains collective ops not contained within "
-                      "a graph surrounded by SPMDFullToShardShape and "
-                      "SPMDShardToFullShape custom calls. This case is not yet "
-                      "supported.";
-      }
+      LOG_IF(FATAL, HloCollectiveInstruction::ClassOf(instruction))
+          << "The module contains collective ops not contained within a graph "
+             "surrounded by SPMDFullToShardShape and SPMDShardToFullShape "
+             "custom calls. This case is not yet supported.";
       to_shard.insert(instruction);
     }
   }
@@ -3625,6 +3627,10 @@ absl::StatusOr<bool> AutoShardingImplementation::RunAutoSharding(
   } else {
     partial_mesh_shapes = {option_.device_mesh_shape};
   }
+  // Allocate an equal portion of solver timeout to each partial mesh shape.
+  option_.solver_timeout_in_seconds /= partial_mesh_shapes.size();
+  LOG(INFO) << "Setting solver timeout per partial mesh shape to "
+            << option_.solver_timeout_in_seconds << " seconds.";
 
   std::unique_ptr<CallGraph> call_graph = CallGraph::Build(module);
 
@@ -4114,6 +4120,7 @@ absl::StatusOr<bool> AutoSharding::Run(
   double min_objective_value = std::numeric_limits<double>::max();
   int min_mesh_shape_index = -1;
   std::unique_ptr<HloModule> min_mesh_shape_module;
+  std::vector<std::string> mesh_shape_error_messages(mesh_shapes.size());
   for (size_t i = 0; i < mesh_shapes.size(); ++i) {
     VLOG(1) << "Trying mesh shape " << spmd::ToString(mesh_shapes[i]);
     AutoShardingOption this_option = option_;
@@ -4124,12 +4131,17 @@ absl::StatusOr<bool> AutoSharding::Run(
       this_option.device_mesh_beta.clear();
       TF_RETURN_IF_ERROR(this_option.CheckAndSetup());
     }
+    // Allocate an equal portion of solver timeout to each attempted mesh shape.
+    this_option.solver_timeout_in_seconds /= mesh_shapes.size();
+    LOG(INFO) << "Setting solver timeout per mesh shape to "
+              << this_option.solver_timeout_in_seconds << " seconds.";
     auto pass = std::make_unique<AutoShardingImplementation>(this_option);
     std::unique_ptr<HloModule> module_clone = CloneModule(module);
     absl::StatusOr<bool> pass_result =
         pass->RunAutoSharding(module_clone.get(), replicated_small_tensors,
                               execution_threads, sharding_propagation_solution);
     if (!pass_result.ok()) {
+      mesh_shape_error_messages[i] = pass_result.status().message();
       VLOG(1) << "Mesh shape " << spmd::ToString(mesh_shapes[i])
               << " led to the following error: "
               << pass_result.status().message();
@@ -4149,17 +4161,19 @@ absl::StatusOr<bool> AutoSharding::Run(
     }
   }
 
-  std::string trying_to_find =
-      option_.try_multiple_mesh_shapes
-          ? "a device mesh (and the corresponding shardings)"
-          : "shardings";
-  CHECK_GE(min_mesh_shape_index, 0)
-      << "The auto-sharding pass could not find " << trying_to_find
-      << " that works for this input. This could be the result of a low memory "
-         "budget (please refer to the "
-         "`--xla_tpu_auto_spmd_partitioning_memory_budget_ratio` flag to set a "
-         "higher budget). If you think you have set a reasonably large memory "
-         "budget, please report this as a bug.";
+  if (min_mesh_shape_index < 0) {
+    std::string error_message =
+        "The auto-sharding pass could not find a solution for any of the mesh "
+        "shapes tried. Below, we list the errors encountered for each of the "
+        "mesh shapes:\n";
+    for (size_t i = 0; i < mesh_shapes.size(); ++i) {
+      LOG(INFO) << mesh_shape_error_messages[i];
+      absl::StrAppend(&error_message, "Mesh shape ",
+                      spmd::ToString(mesh_shapes[i]), ": ",
+                      mesh_shape_error_messages[i], "\n");
+    }
+    return absl::InternalError(error_message);
+  }
 
   solver_optimal_objective_value_ = min_objective_value;
   if (module_is_changed) {
