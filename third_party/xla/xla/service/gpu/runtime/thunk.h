@@ -31,16 +31,18 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "xla/backends/gpu/collectives/gpu_clique_key.h"
 #include "xla/core/collectives/communicator.h"
+#include "xla/core/collectives/rank_id.h"
 #include "xla/executable_run_options.h"
 #include "xla/ffi/execution_context.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/global_device_id.h"
 #include "xla/service/gpu/buffer_allocations.h"
+#include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/runtime/nccl_clique.h"
-#include "xla/service/gpu/runtime/nccl_clique_key.h"
 #include "xla/service/service_executable_run_options.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
@@ -198,7 +200,7 @@ class Thunk {
   class ResourceRequests {
    public:
     virtual ~ResourceRequests() = default;
-    virtual absl::Status AddClique(const NcclCliqueKey& clique_key,
+    virtual absl::Status AddClique(const GpuCliqueKey& clique_key,
                                    int32_t num_local_participants) = 0;
   };
 
@@ -213,16 +215,16 @@ class Thunk {
     CollectiveCliques() = default;
     explicit CollectiveCliques(NcclClique::AcquiredCliquesMap cliques_map);
 
-    absl::StatusOr<Communicator*> GetComm(const NcclCliqueKey& clique_key,
-                                          int32_t rank) const;
+    absl::StatusOr<Communicator*> GetComm(const GpuCliqueKey& clique_key,
+                                          RankId rank) const;
 
     // Returns the number of communicators in a collective clique. Returns error
     // if we do not have an acquired clique for a given key.
     absl::StatusOr<size_t> num_communicators(
-        const NcclCliqueKey& clique_key) const;
+        const GpuCliqueKey& clique_key) const;
 
     // Returns whether the clique is a local clique.
-    absl::StatusOr<bool> is_local_clique(const NcclCliqueKey& clique_key) const;
+    absl::StatusOr<bool> is_local_clique(const GpuCliqueKey& clique_key) const;
 
     bool empty() const { return cliques_map_.empty(); }
 
@@ -263,7 +265,7 @@ class Thunk {
 
     const DeviceAssignment* device_assn;
     const GlobalDeviceIdMap* global_device_id_map;
-    const NcclCliqueIdCallback* nccl_clique_id_callback;
+    const CliqueIdCallback* nccl_clique_id_callback;
 
     int64_t collective_max_nchannels;
     int64_t p2p_max_nchannels;
@@ -275,7 +277,7 @@ class Thunk {
                             GlobalDeviceId global_device_id,
                             const DeviceAssignment* device_assn,
                             const GlobalDeviceIdMap* global_device_id_map,
-                            const NcclCliqueIdCallback* nccl_clique_id_callback,
+                            const CliqueIdCallback* nccl_clique_id_callback,
                             int64_t collective_max_nchannels,
                             int64_t p2p_max_nchannels);
   };

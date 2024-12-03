@@ -22,7 +22,7 @@ limitations under the License.
 
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
-#include "xla/service/gpu/model/indexing_map.h"
+#include "xla/hlo/analysis/indexing_map.h"
 #include "xla/stream_executor/device_description.h"
 
 namespace xla {
@@ -46,7 +46,10 @@ std::unique_ptr<mlir::Pass> CreateEraseDeadFunctionsPass();
 std::unique_ptr<mlir::Pass> CreateExpandFloatOpsPass();
 std::unique_ptr<mlir::Pass> CreateFlattenTensorsPass();
 std::unique_ptr<mlir::Pass> CreateLowerTensorsPass(
-    bool is_amd_gpu = false, const std::string& gpu_arch = "6.0");
+    const std::string& gpu_device_info =
+        "cuda_compute_capability { major: 6 }");
+std::unique_ptr<mlir::Pass> CreateLowerTensorsPass(
+    const se::DeviceDescription& device_description);
 std::unique_ptr<mlir::Pass> CreateLowerToLLVMPass(bool use_rocdl);
 std::unique_ptr<mlir::Pass> CreateLowerXlaGpuToScfPass(int64_t warp_size = 32);
 std::unique_ptr<mlir::Pass> CreateLowerXlaGpuLoopsToScfPass();

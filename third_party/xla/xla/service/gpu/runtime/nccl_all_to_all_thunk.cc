@@ -27,12 +27,13 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/substitute.h"
 #include "absl/synchronization/mutex.h"
+#include "xla/backends/gpu/collectives/gpu_clique_key.h"
+#include "xla/backends/gpu/collectives/gpu_collectives.h"
 #include "xla/core/collectives/communicator.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/collective_ops_utils.h"
 #include "xla/service/gpu/runtime/nccl_api.h"
-#include "xla/service/gpu/runtime/nccl_clique_key.h"
 #include "xla/service/gpu/runtime/nccl_collective_thunk.h"
 #include "xla/service/gpu/runtime/thunk.h"
 #include "xla/shape.h"
@@ -105,15 +106,15 @@ absl::Status NcclAllToAllStartThunk::Initialize(
   VLOG(5) << "Local device count: " << device_count_;
 
   if (is_local() && p2p_memcpy_enabled_) {
-    const NcclStreamId stream_id = nccl_stream_id();
+    const CollectiveStreamId stream_id = nccl_stream_id();
     AsyncStreamKind stream_kind = GetAsyncStreamKind();
     TF_ASSIGN_OR_RETURN(
-        NcclCommHandleWrapper comm_wrapper,
+        CommunicatorHandle comm_handle,
         GetNcclComm(*params.collective_params, *params.collective_cliques,
                     config().replica_groups, config().group_mode, stream_id,
                     stream_kind));
     TF_ASSIGN_OR_RETURN(int32_t num_participants,
-                        nccl_api()->CommCount(comm_wrapper.comm_handle));
+                        nccl_api()->CommCount(comm_handle.comm));
     int local_id = params.stream->parent()->device_ordinal() % num_participants;
     {
       absl::MutexLock lock(&pointer_maps_mutex_);
@@ -136,15 +137,15 @@ absl::Status NcclAllToAllStartThunk::Initialize(
 
 absl::Status NcclAllToAllStartThunk::Cleanup(const CleanupParams& params) {
   if (p2p_memcpy_enabled_) {
-    const NcclStreamId stream_id = nccl_stream_id();
+    const CollectiveStreamId stream_id = nccl_stream_id();
     AsyncStreamKind stream_kind = GetAsyncStreamKind();
     TF_ASSIGN_OR_RETURN(
-        NcclCommHandleWrapper comm_wrapper,
+        CommunicatorHandle comm_handle,
         GetNcclComm(*params.collective_params, *params.collective_cliques,
                     config().replica_groups, config().group_mode, stream_id,
                     stream_kind));
     TF_ASSIGN_OR_RETURN(int32_t num_participants,
-                        nccl_api()->CommCount(comm_wrapper.comm_handle));
+                        nccl_api()->CommCount(comm_handle.comm));
 
     int local_id = params.executor->device_ordinal() % num_participants;
     {
@@ -170,13 +171,13 @@ absl::Status NcclAllToAllStartThunk::Cleanup(const CleanupParams& params) {
 
 absl::Status NcclAllToAllStartThunk::RunNcclCollective(
     const ExecuteParams& params, se::Stream& stream,
-    NcclCommHandleWrapper comm_wrapper) {
+    CommunicatorHandle comm_handle) {
   TF_ASSIGN_OR_RETURN(
       std::vector<DeviceBufferPair> device_buffers,
       ConvertToDeviceBuffers(params, buffers_,
                              config_.config.operand_element_type));
   TF_ASSIGN_OR_RETURN(int32_t num_participants,
-                      nccl_api()->CommCount(comm_wrapper.comm_handle));
+                      nccl_api()->CommCount(comm_handle.comm));
 
   if (is_local() && p2p_memcpy_enabled_) {
     int local_id = stream.parent()->device_ordinal() % num_participants;
@@ -187,13 +188,12 @@ absl::Status NcclAllToAllStartThunk::RunNcclCollective(
       send_pointer_map = &send_pointer_maps_[local_id];
       receive_pointer_map = &receive_pointer_maps_[local_id];
     }
-    return xla::gpu::RunMemCpyAllToAll(
-        nccl_api(), config_.has_split_dimension, device_buffers, stream,
-        comm_wrapper.comm_handle, *send_pointer_map, *receive_pointer_map);
+    return xla::gpu::RunMemCpyAllToAll(nccl_api(), config_.has_split_dimension,
+                                       device_buffers, stream, comm_handle.comm,
+                                       *send_pointer_map, *receive_pointer_map);
   }
   return xla::gpu::RunAllToAll(nccl_api(), config_.has_split_dimension,
-                               device_buffers, stream,
-                               comm_wrapper.comm_handle);
+                               device_buffers, stream, comm_handle.comm);
 }
 
 AsyncStreamKind NcclAllToAllStartThunk::GetAsyncStreamKind() const {

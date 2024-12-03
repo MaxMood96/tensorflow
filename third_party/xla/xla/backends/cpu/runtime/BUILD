@@ -121,11 +121,25 @@ xla_cc_test(
 )
 
 cc_library(
+    name = "function_library",
+    srcs = ["function_library.cc"],
+    hdrs = ["function_library.h"],
+    deps = [
+        ":kernel_c_api",
+        "//xla:util",
+        "//xla/tsl/lib/gtl:int_type",
+        "@com_google_absl//absl/status:statusor",
+        "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+cc_library(
     name = "thunk",
     srcs = ["thunk.cc"],
     hdrs = ["thunk.h"],
     deps = [
         ":buffer_allocations",
+        ":function_library",
         ":kernel_c_api",
         ":resource_use",
         "//xla:executable_run_options",
@@ -843,6 +857,7 @@ cc_library(
     hdrs = ["kernel_thunk.h"],
     deps = [
         ":buffer_allocations",
+        ":function_library",
         ":kernel",
         ":kernel_c_api",
         ":thunk",
@@ -853,6 +868,7 @@ cc_library(
         "//xla/stream_executor:launch_dim",
         "//xla/tsl/concurrency:async_value",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
@@ -876,6 +892,7 @@ xla_cc_test(
     srcs = ["kernel_thunk_test.cc"],
     deps = [
         ":buffer_allocations",
+        ":function_library",
         ":kernel_c_api",
         ":kernel_thunk",
         ":thunk",
@@ -946,6 +963,7 @@ cc_library(
     srcs = ["sort_thunk.cc"],
     hdrs = ["sort_thunk.h"],
     deps = [
+        ":function_library",
         ":thunk",
         "//xla:shape_util",
         "//xla:util",
@@ -954,6 +972,7 @@ cc_library(
         "//xla/stream_executor:device_memory",
         "//xla/tsl/concurrency:async_value",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:dynamic_annotations",
         "@com_google_absl//absl/container:inlined_vector",
@@ -977,6 +996,7 @@ xla_cc_test(
     srcs = ["sort_thunk_test.cc"],
     deps = [
         ":buffer_allocations",
+        ":function_library",
         ":sort_thunk",
         ":thunk",
         "//xla:shape_util",

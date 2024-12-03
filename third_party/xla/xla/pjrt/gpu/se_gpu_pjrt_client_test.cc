@@ -443,6 +443,49 @@ TEST(StreamExecutorGpuClientTest, ForwardUserDataToFfiHandler) {
       *result_literal));
 }
 
+static absl::Status MemsetFromAttr(
+    se::Stream* stream, float attr,
+    ffi::Result<ffi::BufferR1<PrimitiveType::F32>> result) {
+  uint32_t pattern;
+  std::memcpy(&pattern, &attr, sizeof(pattern));
+
+  se::DeviceMemoryBase base = result->device_memory();
+  return stream->Memset32(&base, pattern, base.size());
+}
+
+XLA_FFI_DEFINE_HANDLER(kMemsetFromAttr, MemsetFromAttr,
+                       ffi::Ffi::Bind()
+                           .Ctx<ffi::Stream>()
+                           .Attr<float>("attr")
+                           .Ret<ffi::BufferR1<PrimitiveType::F32>>());
+
+XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(), "MemsetFromAttr",
+                         PlatformUtil::CanonicalPlatformName("GPU").value(),
+                         kMemsetFromAttr);
+
+TEST(StreamExecutorGpuClientTest, PassAttrToFfiHandler) {
+  static constexpr char const* kProgram = R"(
+    HloModule ffi_handler
+    ENTRY main {
+      ROOT %custom-call = f32[4] custom-call(),
+          custom_call_target="MemsetFromAttr",
+          api_version=API_VERSION_TYPED_FFI,
+          backend_config={"custom_call_backend_config": {"attributes": "{attr = 3.0 : f32}"}}
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto client,
+                          GetStreamExecutorGpuClient(GpuClientOptions()));
+  TF_ASSERT_OK_AND_ASSIGN(auto executable,
+                          CompileExecutable(kProgram, *client));
+
+  ExecuteOptions opts;
+  auto result = executable->Execute(/*argument_handles=*/{{}}, opts);
+  TF_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::Literal> result_literal,
+                          ExtractSingleResult(result));
+  EXPECT_TRUE(LiteralTestUtil::Equal(
+      LiteralUtil::CreateR1<float>({3.0f, 3.0f, 3.0f, 3.0f}), *result_literal));
+}
+
 TEST(StreamExecutorGpuClientTest, ToLiteralAsync) {
   TF_ASSERT_OK_AND_ASSIGN(auto client,
                           GetStreamExecutorGpuClient(GpuClientOptions()));
@@ -1797,7 +1840,8 @@ TEST(StreamExecutorGpuClientTest, AutoLayoutIsSupported) {
   EXPECT_NE(layouts[1]->ToString(), "{2,1,0}");
 }
 
-class ShardedAutotuningTest : public ::testing::TestWithParam<bool> {
+class ShardedAutotuningTest
+    : public ::testing::TestWithParam<std::tuple<bool, int>> {
  public:
   static constexpr int kNumNodes = 2;
 };
@@ -1805,12 +1849,18 @@ class ShardedAutotuningTest : public ::testing::TestWithParam<bool> {
 static const char* test_binary_name;
 
 TEST_P(ShardedAutotuningTest, ShardedAutotuningWorks) {
+  bool use_xla_computation;
+  int num_active_nodes;
+  std::tie(use_xla_computation, num_active_nodes) = GetParam();
+
   tsl::SubProcess child[ShardedAutotuningTest::kNumNodes];
   for (int node_id = 0; node_id < ShardedAutotuningTest::kNumNodes; ++node_id) {
     std::vector<std::string> argv;
     argv.push_back(test_binary_name);
     argv.push_back(absl::StrFormat("--node_id=%d", node_id));
-    argv.push_back(absl::StrFormat("--use_xla_computation=%d", GetParam()));
+    argv.push_back(
+        absl::StrFormat("--use_xla_computation=%d", use_xla_computation));
+    argv.push_back(absl::StrFormat("--num_active_nodes=%d", num_active_nodes));
     child[node_id].SetProgram(test_binary_name, argv);
     child[node_id].SetChannelAction(tsl::CHAN_STDOUT, tsl::ACTION_PIPE);
     child[node_id].SetChannelAction(tsl::CHAN_STDERR, tsl::ACTION_PIPE);
@@ -1833,6 +1883,7 @@ TEST_P(ShardedAutotuningTest, ShardedAutotuningWorks) {
 }
 
 absl::Status ShardedAutotuningWorksTestBody(const int node_id,
+                                            const int num_active_nodes,
                                             bool use_xla_computation) {
   std::unique_ptr<xla::DistributedRuntimeService> service;
   if (node_id == 0) {
@@ -1867,6 +1918,11 @@ absl::Status ShardedAutotuningWorksTestBody(const int node_id,
   }
   TF_RET_CHECK(client->addressable_device_count() == 1);
   TF_RET_CHECK(client->device_count() == ShardedAutotuningTest::kNumNodes);
+
+  if (node_id >= num_active_nodes) {
+    // Inactive nodes connect to the coordination service but don't compile.
+    return absl::OkStatus();
+  }
 
   CompileOptions compile_options;
   DebugOptions* debug_options =
@@ -1908,8 +1964,11 @@ absl::Status ShardedAutotuningWorksTestBody(const int node_id,
   return absl::OkStatus();
 }
 
-INSTANTIATE_TEST_SUITE_P(ShardedAutotuningTest, ShardedAutotuningTest,
-                         ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(
+    ShardedAutotuningTest, ShardedAutotuningTest,
+    ::testing::Combine(::testing::Bool(),
+                       ::testing::Range(1,
+                                        ShardedAutotuningTest::kNumNodes + 1)));
 
 }  // namespace
 }  // namespace xla
@@ -1918,10 +1977,13 @@ int main(int argc, char* argv[]) {
   // Save name of binary so that it may invoke itself.
   xla::test_binary_name = argv[0];
   int node_id = -1;
+  int num_active_nodes = -1;
   bool use_xla_computation = false;
   std::vector<tsl::Flag> flag_list = {
       tsl::Flag("node_id", &node_id,
                 "Node ID for ShardedAutotuningWorks test."),
+      tsl::Flag("num_active_nodes", &num_active_nodes,
+                "Test parameter for ShardedAutotuningWorks."),
       tsl::Flag("use_xla_computation", &use_xla_computation,
                 "Test parameter for ShardedAutotuningWorks."),
   };
@@ -1930,7 +1992,8 @@ int main(int argc, char* argv[]) {
   tsl::Flags::Parse(&argc, argv, flag_list);
   testing::InitGoogleTest(&argc, argv);
   if (node_id >= 0) {
-    return xla::ShardedAutotuningWorksTestBody(node_id, use_xla_computation)
+    return xla::ShardedAutotuningWorksTestBody(node_id, num_active_nodes,
+                                               use_xla_computation)
         .raw_code();
   }
   return RUN_ALL_TESTS();
