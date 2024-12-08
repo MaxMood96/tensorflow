@@ -176,6 +176,7 @@ void AddPytorchPasses(mlir::OpPassManager& pass_manager) {
   pass_manager.addPass(mlir::odml::createBuildStableHLOCompositePass());
   pass_manager.addPass(mlir::createInlinerPass());
   pass_manager.addPass(mlir::odml::createLiftCallSiteLocCallerPass());
+  pass_manager.addPass(mlir::odml::createLegalizeQDQCustomCallPass());
   pass_manager.addNestedPass<mlir::func::FuncOp>(mlir::createCSEPass());
 }
 
@@ -285,6 +286,7 @@ void AddPostQuantizationStableHloToTfPasses(
 
   if (pass_config.enable_composite_direct_lowering) {
     pass_manager.addPass(mlir::odml::CreateCompositeLoweringPass());
+    pass_manager.addPass(mlir::createSymbolDCEPass());
   }
 
   // TFLite dialect passes.

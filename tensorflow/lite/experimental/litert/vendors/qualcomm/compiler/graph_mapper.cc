@@ -17,11 +17,7 @@
 #include <alloca.h>
 #include <stdio.h>
 
-#include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <string>
-#include <unordered_map>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/string_view.h"
@@ -43,12 +39,12 @@ namespace litert::qnn {
 
 // Get empty configurations for graph building.
 inline absl::Span<const QnnGraph_Config_t*> GetDefaultGraphConfigs() {
-  QnnHtpGraph_CustomConfig_t htp_graph_config =
+  static QnnHtpGraph_CustomConfig_t htp_graph_config =
       QNN_HTP_GRAPH_CUSTOM_CONFIG_INIT;
   htp_graph_config.option = QNN_HTP_GRAPH_CONFIG_OPTION_PRECISION;
   htp_graph_config.precision = QNN_PRECISION_FLOAT16;
 
-  QnnGraph_Config_t graph_config = QNN_GRAPH_CONFIG_INIT;
+  static QnnGraph_Config_t graph_config = QNN_GRAPH_CONFIG_INIT;
   graph_config.option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
   graph_config.customConfig = &htp_graph_config;
 
@@ -107,6 +103,14 @@ LiteRtStatus GraphMapper::LegalizeAndRegister(LiteRtTensor litert_tensor,
   litert::Tensor tensor(litert_tensor);
   LITERT_RETURN_STATUS_IF_NOT_OK(LegalizeTensor(tensor, qnn_tensor));
   LITERT_RETURN_STATUS_IF_NOT_OK(AssignTensorName(qnn_tensor));
+
+  // Set tensor as graph output if it is used by other Ops.
+  if (graph_outpus_.contains(litert_tensor)) {
+    LITERT_LOG(LITERT_INFO, "Setting tensor %d as Graph output",
+               qnn_tensor.v2.id);
+    qnn_tensor.v2.type = QNN_TENSOR_TYPE_APP_READ;
+  }
+
   LITERT_RETURN_STATUS_IF_QNN_NOT_OK(
       qnn_.Api()->tensorCreateGraphTensor(QnnGraph(), &qnn_tensor));
 
@@ -117,11 +121,8 @@ LiteRtStatus GraphMapper::LegalizeAndRegister(LiteRtTensor litert_tensor,
 }
 
 LiteRtStatus GraphMapper::IsLiteRtSubgraphSupported() {
-  LITERT_LOG(LITERT_INFO, "Subgraph has %d inputs", Graph().Inputs().size())
-  LITERT_ENSURE_SUPPORTED(
-      Graph().Inputs().size() <= 5,
-      "Only subgraphs with less than 5 inputs currently supported");
-
+  // For now, we assume all LiteRt subgraphs are supported.
+  // TODO: b/381133565: Implement or remove this function.
   return kLiteRtStatusOk;
 }
 
