@@ -34,10 +34,10 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/permutation_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
-#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/reduction_utils.h"
@@ -297,7 +297,6 @@ FusionDecision ShapesCompatibleForMultiOutputFusion(
   auto get_loop_shape = [&](const HloInstruction* element_instr) {
     // Special-case reduction-to-vector ops: The loop dimensions are determined
     // by the shape of the first operand.
-    // TODO(jreiffers): Compute the non-trivial hero only once here.
     const auto& hero = element_instr->parent()->IsFusionComputation()
                            ? FindNonTrivialHero(*element_instr)
                            : *element_instr;
@@ -819,7 +818,6 @@ std::vector<const HloInstruction*> GetFusionRoots(
 }
 
 bool IsGenericTritonFusion(const HloInstruction& instr) {
-  // TODO(b/332649307): Eventually turn this into a generic fusion.
   return instr.opcode() == HloOpcode::kFusion &&
          instr.fusion_kind() == HloInstruction::FusionKind::kCustom &&
          instr.backend_config<GpuBackendConfig>().ok() &&

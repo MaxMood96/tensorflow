@@ -21,6 +21,7 @@ limitations under the License.
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -42,6 +43,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/service/dump.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/fusion_deduplication_cache.h"
@@ -49,7 +51,6 @@ limitations under the License.
 #include "xla/service/gpu/fusions/triton/triton_support.h"
 #include "xla/service/gpu/gpu_fusible.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
-#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/model/fusion_analysis_cache.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
@@ -747,7 +748,8 @@ class PriorityFusionQueue {
           "the fusion would result in an overly large code duplication");
     }
 
-    return InstructionFusion::ShouldFuseInPlaceOp(producer, consumer);
+    return InstructionFusion::ShouldFuseInPlaceOp(producer, consumer,
+                                                  std::nullopt);
   }
 
   FusionDecision CanFuseCached(HloInstruction* producer,

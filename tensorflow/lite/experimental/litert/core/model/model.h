@@ -15,9 +15,11 @@
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_LITERT_CORE_MODEL_MODEL_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_CORE_MODEL_MODEL_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <list>
+#include <memory>
 #include <vector>
 
 #include "absl/strings/string_view.h"
@@ -157,6 +159,20 @@ struct LiteRtSubgraphT {
 };
 
 //
+// Signature
+//
+
+#define LITERT_DEFAULT_SIGNATURE_KEY "<placeholder signature>"
+
+struct LiteRtSignatureT {
+  using Ptr = std::unique_ptr<LiteRtSignatureT>;
+  absl::string_view key;
+  int subgraph_index;
+  std::vector<absl::string_view> input_names;
+  std::vector<absl::string_view> output_names;
+};
+
+//
 // Model
 //
 
@@ -176,6 +192,9 @@ struct LiteRtModelT {
   // re-serialization.
   std::string custom_op_code;
 
+  // Signature definitions.
+  std::vector<std::unique_ptr<LiteRtSignatureT>> signatures;
+
   // Look up metadata by key, getting a view of its buffer as a string
   // if it exists.
   litert::Expected<litert::BufferRef<uint8_t>> FindMetadata(
@@ -184,6 +203,23 @@ struct LiteRtModelT {
   // Adds a new metadata buffer to the model. Fails if it already exists.
   LiteRtStatus PushMetadata(absl::string_view key,
                             litert::BufferRef<uint8_t> data);
+
+  // Look up signature by key.
+  litert::Expected<LiteRtSignatureT*> FindSignature(
+      absl::string_view signature_key) const;
+
+  // Look up subgraph by key.
+  litert::Expected<const LiteRtSubgraphT*> FindSubgraph(
+      absl::string_view signature_key) const;
+
+  size_t MainSubgraphIndex() const {
+    // TODO replace this with the index of the default signature.
+    return 0;
+  }
+
+  const LiteRtSubgraphT& MainSubgraph() const {
+    return subgraphs[MainSubgraphIndex()];
+  }
 };
 
 //
