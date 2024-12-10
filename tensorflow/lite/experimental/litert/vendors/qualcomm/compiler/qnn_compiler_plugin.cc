@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "third_party/qairt/latest/include/QNN/HTP/QnnHtpDevice.h"
@@ -28,7 +29,6 @@
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_model.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_model_predicates.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_compiler_plugin.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/qnn_compose_graph.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/qnn_manager.h"
@@ -43,13 +43,15 @@ namespace {
 
 constexpr char kPluginManufacturer[] = "Qualcomm";
 
+// clang-format off
 constexpr std::pair<const char*, QnnHtpDevice_Arch_t> kPluginSocModels[] = {
     {"V68", QNN_HTP_DEVICE_ARCH_V68},
     {"V69", QNN_HTP_DEVICE_ARCH_V69},
     {"V73", QNN_HTP_DEVICE_ARCH_V73},
     {"V75", QNN_HTP_DEVICE_ARCH_V75},
+    {"V79", QNN_HTP_DEVICE_ARCH_V79},
 };
-// clang-format off
+
 constexpr LiteRtOpCode kSupportedOps[] = {
   kLiteRtOpCodeTflAdd,
   kLiteRtOpCodeTflDiv,
@@ -70,6 +72,10 @@ constexpr LiteRtOpCode kSupportedOps[] = {
   kLiteRtOpCodeTflSin,
   kLiteRtOpCodeTflCos,
   kLiteRtOpCodeTflFullyConnected,
+  kLiteRtOpCodeTflEmbeddingLookup,
+  kLiteRtOpCodeTflLogicalAnd,
+  kLiteRtOpCodeTflLess,
+  kLiteRtOpCodeTflGreater,
 };
 // clang-format on
 
@@ -226,11 +232,16 @@ LiteRtStatus LiteRtCompilerPluginCompile(
     LiteRtCompilerPlugin compiler_plugin, const char* soc_model,
     LiteRtSubgraphArray partitions, LiteRtParamIndex num_partitions,
     LiteRtCompiledResult* compiled_result) {
-  LITERT_LOG(LITERT_INFO, "Starting QNN Compilation for %d subgraphs",
-             num_partitions);
-  auto opt_soc_model = FindSocModel(soc_model);
-  if (opt_soc_model.has_value()) {
-    LITERT_LOG(LITERT_INFO, "For arch: %d", opt_soc_model.value());
+  LITERT_LOG(LITERT_INFO,
+             "Starting QNN Compilation for %d subgraphs, soc_model=%s",
+             num_partitions, soc_model);
+
+  auto opt_soc_model = soc_model ? FindSocModel(soc_model) : std::nullopt;
+  if (opt_soc_model) {
+    LITERT_LOG(LITERT_ERROR, "Compiling QNN architecture: %d", *opt_soc_model);
+  } else if (soc_model) {
+    LITERT_LOG(LITERT_ERROR, "Unexpected SoC model: %s", soc_model);
+    return kLiteRtStatusErrorInvalidArgument;
   }
 
   // Initialize SDK and load qnn shared libraries.

@@ -40,11 +40,11 @@ limitations under the License.
 #include "xla/hlo/pass/hlo_pass_fix.h"
 #include "xla/hlo/pass/hlo_pass_pipeline.h"
 #include "xla/hlo/utils/hlo_query.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/layout_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/fusion_pipeline.h"
 #include "xla/service/gpu/fusions/triton/triton_support.h"
-#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/model/fusion_analysis_cache.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
@@ -152,7 +152,7 @@ bool IsTriviallyFusible(HloInstruction* instr,
     return false;
   }
 
-  if (instr->opcode() == HloOpcode::kBitcast &&
+  if (HloPredicateIsOp<HloOpcode::kBitcast>(instr) &&
       BitcastIsTilingNoop(instr, gpu_version)) {
     return true;
   }
@@ -282,7 +282,7 @@ absl::StatusOr<HloFusionInstruction*> MakeFusionForDiamondChain(
       create_computation(operand);
       new_operands.push_back(old_to_new_mapping[operand]);
     }
-    if (instr->opcode() == HloOpcode::kParameter) {
+    if (HloPredicateIsOp<HloOpcode::kParameter>(instr)) {
       old_to_new_mapping[instr] =
           builder.AddInstruction(HloInstruction::CreateParameter(
               param, instr->shape(), absl::StrCat("parameter_", param)));
@@ -528,8 +528,8 @@ FusionDecision ShouldFuseReduction(const HloInstruction& reduce,
   // convert of a constant.
   const HloInstruction* identity = reduce.operand(1);
   bool should_fuse_identity =
-      identity->opcode() == HloOpcode::kConstant ||
-      (identity->opcode() == HloOpcode::kConvert &&
+      HloPredicateIsOp<HloOpcode::kConstant>(identity) ||
+      (HloPredicateIsOp<HloOpcode::kConvert>(identity) &&
        identity->operand(0)->opcode() == HloOpcode::kConstant &&
        IsTritonSupportedInstruction(*identity, cc));
   if (!should_fuse_identity) {
@@ -585,8 +585,8 @@ DiamondMatchingDecision MatchesTritonCompatibleClosedReductionDiamondImpl(
   // convert of a constant.
   const HloInstruction* identity = reduce->operand(1);
   bool should_fuse_identity =
-      identity->opcode() == HloOpcode::kConstant ||
-      (identity->opcode() == HloOpcode::kConvert &&
+      HloPredicateIsOp<HloOpcode::kConstant>(identity) ||
+      (HloPredicateIsOp<HloOpcode::kConvert>(identity) &&
        identity->operand(0)->opcode() == HloOpcode::kConstant &&
        IsTritonSupportedInstruction(*identity, cc));
   if (!should_fuse_identity) {
@@ -676,7 +676,7 @@ absl::StatusOr<std::vector<DiamondChainDescriptor>> FindAllFusibleDiamonds(
     }
   }
 
-  return std::move(matched_diamonds);
+  return matched_diamonds;
 }
 
 // Returns the size of the reduction dimension of the input diamond.
@@ -684,7 +684,7 @@ int64_t GetReductionDimensionSizeForDiamond(
     const DiamondChainDescriptor& diamond_chain) {
   HloInstruction* diamond_root = diamond_chain.root;
   HloInstruction* instr = diamond_root->mutable_operand(1);
-  while (instr->opcode() != HloOpcode::kReduce) {
+  while (HloPredicateIsNotOp<HloOpcode::kReduce>(instr)) {
     instr = ChooseOperandForFusionProcessing(instr);
   }
 
