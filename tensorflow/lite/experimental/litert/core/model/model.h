@@ -15,13 +15,18 @@
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_LITERT_CORE_MODEL_MODEL_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_CORE_MODEL_MODEL_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <list>
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/strings/string_view.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
+#include "tensorflow/lite/experimental/litert/c/litert_logging.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
 #include "tensorflow/lite/experimental/litert/c/litert_op_code.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_buffer_ref.h"
@@ -45,6 +50,7 @@ using TensorType = std::pair<LiteRtTensorTypeId, LiteRtTypeDetail>;
 
 typedef union {
   LiteRtQuantizationPerTensor per_tensor;
+  LiteRtQuantizationPerChannel per_channel;
 } LiteRtQuantizationTypeDetail;
 
 using Quantization =
@@ -83,9 +89,42 @@ struct LiteRtTensorT {
   // Authored name of tensor, may be empty.
   std::string name;
 
+  void SetQuantizationParameters(
+      LiteRtQuantizationTypeDetail quantization_detail) {
+    switch (q_type_id) {
+      case kLiteRtQuantizationPerTensor:
+        q_type_detail.per_tensor = quantization_detail.per_tensor;
+        break;
+      case kLiteRtQuantizationPerChannel:
+        q_type_detail.per_channel.num_channels =
+            quantization_detail.per_channel.num_channels;
+        per_channel_quantization_zero_points.reserve(
+            q_type_detail.per_channel.num_channels);
+        per_channel_quantization_scales.reserve(
+            q_type_detail.per_channel.num_channels);
+        for (int i = 0; i < q_type_detail.per_channel.num_channels; ++i) {
+          per_channel_quantization_zero_points.push_back(
+              quantization_detail.per_channel.zero_points[i]);
+          per_channel_quantization_scales.push_back(
+              quantization_detail.per_channel.scales[i]);
+        }
+        q_type_detail.per_channel.zero_points =
+            per_channel_quantization_zero_points.data();
+        q_type_detail.per_channel.scales =
+            per_channel_quantization_scales.data();
+        q_type_detail.per_channel.quantized_dimension =
+            quantization_detail.per_channel.quantized_dimension;
+        break;
+      default:
+        break;
+    }
+  }
+
  private:
   // TODO Unify mangement of dims and clean this up.
   litert::SmallVec<int32_t> dims;
+  std::vector<int64_t> per_channel_quantization_zero_points;
+  std::vector<float> per_channel_quantization_scales;
 };
 
 //
@@ -157,6 +196,20 @@ struct LiteRtSubgraphT {
 };
 
 //
+// Signature
+//
+
+#define LITERT_DEFAULT_SIGNATURE_KEY "<placeholder signature>"
+
+struct LiteRtSignatureT {
+  using Ptr = std::unique_ptr<LiteRtSignatureT>;
+  absl::string_view key;
+  int subgraph_index;
+  std::vector<absl::string_view> input_names;
+  std::vector<absl::string_view> output_names;
+};
+
+//
 // Model
 //
 
@@ -172,9 +225,16 @@ struct LiteRtModelT {
   // Initial flatbuffer loaded in. "Subgraphs" field has been invalidated.
   std::unique_ptr<tflite::ModelT> flatbuffer_model;
 
+  // The buffer information when the model was loaded from a buffer.
+  const void* model_buffer = nullptr;
+  size_t model_buffer_size = 0;
+
   // Custom code associated with all customs ops emitted during
   // re-serialization.
   std::string custom_op_code;
+
+  // Signature definitions.
+  std::vector<std::unique_ptr<LiteRtSignatureT>> signatures;
 
   // Look up metadata by key, getting a view of its buffer as a string
   // if it exists.
@@ -184,6 +244,23 @@ struct LiteRtModelT {
   // Adds a new metadata buffer to the model. Fails if it already exists.
   LiteRtStatus PushMetadata(absl::string_view key,
                             litert::BufferRef<uint8_t> data);
+
+  // Look up signature by key.
+  litert::Expected<LiteRtSignatureT*> FindSignature(
+      absl::string_view signature_key) const;
+
+  // Look up subgraph by key.
+  litert::Expected<const LiteRtSubgraphT*> FindSubgraph(
+      absl::string_view signature_key) const;
+
+  size_t MainSubgraphIndex() const {
+    // TODO replace this with the index of the default signature.
+    return 0;
+  }
+
+  const LiteRtSubgraphT& MainSubgraph() const {
+    return subgraphs[MainSubgraphIndex()];
+  }
 };
 
 //
@@ -204,9 +281,9 @@ class LiteRtOpListT {
 
  private:
   // NOTE: This was originally a vector. Was encountering really odd
-  // segfaults when freeing after code on another side of a compilation boundary
-  // was doing pushes that resized. A list+copy to vector is not optimimal,
-  // revisit if bottleneck.
+  // segfaults when freeing after code on another side of a compilation
+  // boundary was doing pushes that resized. A list+copy to vector is not
+  // optimal, revisit if bottleneck.
   std::list<LiteRtOp> ops_;
 };
 

@@ -58,7 +58,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_autotune_max_solutions(0);
   opts.set_xla_cpu_multi_thread_eigen(true);
   opts.set_xla_gpu_cuda_data_dir("./cuda_sdk_lib");
-  opts.set_xla_gpu_asm_extra_flags("");
+  opts.set_xla_gpu_generate_debug_info(false);
+  opts.set_xla_gpu_generate_line_info(false);
 
   // As of cudnn 8.9.0, runtime fusion creates convolutions that take about 7s
   // seconds to run the first time we call them, at least on Ampere.  In
@@ -179,6 +180,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
 
   opts.set_xla_gpu_collective_permute_decomposer_threshold(
       std::numeric_limits<int64_t>::max());
+  opts.set_xla_gpu_enable_experimental_pipeline_parallelism_opt(false);
 
   opts.set_xla_cpu_enable_mlir_tiling_and_fusion(true);
   opts.set_xla_cpu_enable_custom_matmul_tiling(false);
@@ -207,7 +209,6 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_exhaustive_tiling_search(false);
 
   opts.set_xla_gpu_experimental_enable_triton_heroless_priority_fusion(false);
-  opts.set_xla_gpu_experimental_enable_triton_softmax_priority_fusion(true);
 
   opts.set_xla_gpu_auto_spmd_partitioning_memory_budget_gb(0);
   opts.set_xla_gpu_auto_spmd_partitioning_memory_budget_ratio(1.1);
@@ -226,6 +227,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
       DebugOptions::WHILE_LOOP_UNROLLING_AUTO_UNROLL);
   opts.set_xla_gpu_ensure_minor_dot_contraction_dims(false);
   opts.set_xla_gpu_filter_kernels_spilling_registers_on_autotuning(true);
+  opts.set_xla_gpu_fail_ptx_compilation_on_register_spilling(false);
   opts.set_xla_gpu_llvm_verification_level(0);
   opts.set_xla_gpu_target_config_filename("");
   opts.set_xla_gpu_enable_cub_radix_sort(true);
@@ -247,7 +249,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_enable_bf16_3way_gemm(false);
   opts.set_xla_gpu_nccl_collective_max_nchannels(0);
   opts.set_xla_gpu_nccl_p2p_max_nchannels(0);
-  opts.set_xla_gpu_multi_streamed_windowed_einsum(false);
+  opts.set_xla_gpu_multi_streamed_windowed_einsum(true);
 
   opts.set_xla_gpu_experimental_stream_annotation(false);
   // Minimum combined size of matrices in matrix multiplication to
@@ -268,7 +270,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
 
   opts.set_xla_gpu_nccl_terminate_on_error(false);
 
-  opts.set_xla_gpu_shard_autotuning(false);
+  opts.set_xla_gpu_shard_autotuning(true);
 
   opts.set_xla_syntax_sugar_async_ops(false);
 
@@ -295,6 +297,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_experimental_parallel_collective_overlap_limit(1);
   opts.set_xla_pjrt_allow_auto_layout_in_hlo(false);
   opts.set_xla_gpu_enable_scatter_determinism_expander(true);
+  opts.set_xla_gpu_unsupported_enable_ragged_all_to_all_decomposer(true);
   return opts;
 }
 
@@ -968,11 +971,16 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       bool_setter_for(&DebugOptions::set_xla_gpu_disable_gpuasm_optimizations),
       debug_options->xla_gpu_disable_gpuasm_optimizations(),
       "In XLA:GPU run ptxas in -O0 (default is -O3)."));
-  flag_list->push_back(tsl::Flag(
-      "xla_gpu_asm_extra_flags",
-      string_setter_for(&DebugOptions::set_xla_gpu_asm_extra_flags), "",
-      "Pass extra parameters to the GPU assembler tool (i.e., ptxas for CUDA). "
-      "If multiple parameters, separate them by comma."));
+  flag_list->push_back(
+      tsl::Flag("xla_gpu_generate_debug_info",
+                bool_setter_for(&DebugOptions::set_xla_gpu_generate_debug_info),
+                debug_options->xla_gpu_generate_debug_info(),
+                "Generate debug info for codegened CUDA kernels."));
+  flag_list->push_back(
+      tsl::Flag("xla_gpu_generate_line_info",
+                bool_setter_for(&DebugOptions::set_xla_gpu_generate_line_info),
+                debug_options->xla_gpu_generate_line_info(),
+                "Generate line info for codegened CUDA kernels."));
   flag_list->push_back(tsl::Flag(
       "xla_fuel", setter_for_xla_fuel, /*default_value_for_display=*/"",
       "Sets compiler fuel, useful for bisecting bugs in passes. Format "
@@ -1310,6 +1318,13 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                 bool_setter_for(&DebugOptions::set_xla_gpu_dump_llvmir),
                 debug_options->xla_gpu_dump_llvmir(), "Dump LLVM IR."));
   flag_list->push_back(tsl::Flag(
+      "xla_gpu_dump_hlo_unoptimized_snapshots",
+      bool_setter_for(
+          &DebugOptions::set_xla_gpu_dump_hlo_unoptimized_snapshots),
+      debug_options->xla_gpu_dump_hlo_unoptimized_snapshots(),
+      "Every time an HLO module is run, dumps an HloUnoptimizedSnapshot to the "
+      "directory specified by --xla_dump_to."));
+  flag_list->push_back(tsl::Flag(
       "xla_gpu_enable_cudnn_frontend",
       bool_setter_for(&DebugOptions::set_xla_gpu_enable_cudnn_frontend),
       debug_options->xla_gpu_enable_cudnn_frontend(),
@@ -1601,6 +1616,14 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       debug_options->xla_gpu_collective_permute_decomposer_threshold(),
       "Collective permute decomposer threshold."));
   flag_list->push_back(tsl::Flag(
+      "xla_gpu_enable_experimental_pipeline_parallelism_opt",
+      bool_setter_for(
+          &DebugOptions::
+              set_xla_gpu_enable_experimental_pipeline_parallelism_opt),
+      debug_options->xla_gpu_enable_experimental_pipeline_parallelism_opt(),
+      "Experimental optimizations for SPMD-based pipeline parallelism on "
+      "GPU."));
+  flag_list->push_back(tsl::Flag(
       "xla_partitioning_algorithm", setter_for_xla_partitioning_algorithm,
       DebugOptions::PartitioningAlgorithm_Name(
           debug_options->xla_partitioning_algorithm()),
@@ -1652,14 +1675,6 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "Enable heroless Triton fusions in the PriorityFusion pass. The pass "
       "will try to make Triton fusions first and foremost where it is "
       "possible."));
-  flag_list->push_back(tsl::Flag(
-      "xla_gpu_experimental_enable_triton_softmax_priority_fusion",
-      bool_setter_for(
-          &DebugOptions::
-              set_xla_gpu_experimental_enable_triton_softmax_priority_fusion),
-      debug_options
-          ->xla_gpu_experimental_enable_triton_softmax_priority_fusion(),
-      "Enable fusion into Triton Softmax in PriorityFusion pass."));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_dump_autotune_results_to",
       string_setter_for(&DebugOptions::set_xla_gpu_dump_autotune_results_to),
@@ -1796,6 +1811,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
               set_xla_gpu_filter_kernels_spilling_registers_on_autotuning),
       debug_options->xla_gpu_filter_kernels_spilling_registers_on_autotuning(),
       "Filter out kernels that spill registers during autotuning"));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_fail_ptx_compilation_on_register_spilling",
+      bool_setter_for(
+          &DebugOptions::set_xla_gpu_fail_ptx_compilation_on_register_spilling),
+      debug_options->xla_gpu_fail_ptx_compilation_on_register_spilling(),
+      "Fails the PTX compilation if a kernel spills registers."));
   flag_list->push_back(tsl::Flag(
       "xla_debug_buffer_assignment_show_max",
       int64_setter_for(&DebugOptions::set_xla_debug_buffer_assignment_show_max),
@@ -2064,16 +2085,6 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                 debug_options->xla_enable_fast_math(),
                 "Enable optimizations that assume finite math, i.e., no NaN."));
   flag_list->push_back(tsl::Flag(
-      "xla_experimental_exec_time_optimization_effort",
-      float_setter_for(
-          &DebugOptions::set_xla_experimental_exec_time_optimization_effort),
-      debug_options->xla_experimental_exec_time_optimization_effort(),
-      "The execution time optimization effort to expend during compilation. "
-      "Takes range [-1.0, 1.0] where values < 0.0 indicate skipping passes "
-      "which might optimize the final runtime (thus improving compile time), "
-      "and values > 0.0 indicate running additional passes which may improve "
-      "runtime at the cost of compilation time."));
-  flag_list->push_back(tsl::Flag(
       "xla_gpu_experimental_parallel_collective_overlap_limit",
       int32_setter_for(
           &DebugOptions::
@@ -2098,6 +2109,14 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "performance."
       "Note that even when this flag is disabled, scatter operations may still "
       "be deterministic, although with additional overhead."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_unsupported_enable_ragged_all_to_all_decomposer",
+      bool_setter_for(
+          &DebugOptions::
+              set_xla_gpu_unsupported_enable_ragged_all_to_all_decomposer),
+      debug_options->xla_gpu_unsupported_enable_ragged_all_to_all_decomposer(),
+      "Internal: Enable the RaggedAllToAllDecomposer, an experimental pass "
+      "that rewrites ragged-all-to-all as a dense all-to-all operation."));
 }  // NOLINT(readability/fn_size)
 
 // Allocates flag_values and flag_objects; this function must not be called more

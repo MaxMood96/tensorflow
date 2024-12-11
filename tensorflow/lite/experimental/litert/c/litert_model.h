@@ -20,6 +20,7 @@
 
 #include "tensorflow/lite/core/c/c_api_types.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
+#include "tensorflow/lite/experimental/litert/c/litert_layout.h"
 #include "tensorflow/lite/experimental/litert/c/litert_op_code.h"
 
 #ifdef __cplusplus
@@ -45,7 +46,10 @@ LITERT_DEFINE_HANDLE_ARRAY(LiteRtOp);
 LITERT_DEFINE_HANDLE(LiteRtSubgraph);
 LITERT_DEFINE_HANDLE_ARRAY(LiteRtSubgraph);
 
-// A collection of subgraph + metadata.
+// Signature of the model.
+LITERT_DEFINE_HANDLE(LiteRtSignature);
+
+// A collection of subgraph + metadata + signature.
 LITERT_DEFINE_HANDLE(LiteRtModel);
 
 // Append only list of ops.
@@ -87,22 +91,6 @@ typedef enum {
   kLiteRtElementTypeTfString = kTfLiteString,
   kLiteRtElementTypeTfVariant = kTfLiteVariant,
 } LiteRtElementType;
-
-// Max number of dimensions in any ranked tensor type.
-#define LITERT_TENSOR_MAX_RANK 8
-
-// The shape information for tensor types of fixed rank.
-typedef struct {
-  // The number of dimensions.
-  uint32_t rank;
-
-  // Dimension sizes, array of length `rank`. Dynamic dimensions are anything
-  // less than 0. Everything from [rank, LITERT_MAX_RANK) is undefined.
-  int32_t dimensions[LITERT_TENSOR_MAX_RANK];
-
-  // Strides for a nomimal NWHC layout. NULL if unused.
-  const uint32_t* strides;
-} LiteRtLayout;
 
 // Tensor whose rank is dynamic.
 typedef struct {
@@ -151,6 +139,14 @@ typedef struct {
   int64_t zero_point;
 } LiteRtQuantizationPerTensor;
 
+// Schema for tensors quantized with one set of q-params per channel.
+typedef struct {
+  int32_t quantized_dimension;
+  uint64_t num_channels;
+  float* scales;
+  int64_t* zero_points;
+} LiteRtQuantizationPerChannel;
+
 // The identifier for quantization scheme type union.
 typedef enum {
   // Tag for tensors without quantization.
@@ -173,6 +169,11 @@ LiteRtStatus LiteRtGetQuantizationTypeId(LiteRtTensor tensor,
 // Get the per-tensor quantization information for a given tensor if it has it.
 LiteRtStatus LiteRtGetPerTensorQuantization(
     LiteRtTensor tensor, LiteRtQuantizationPerTensor* per_tensor_quantization);
+
+// Get the per-channel quantization information for a given tensor if it has it.
+LiteRtStatus LiteRtGetPerChannelQuantization(
+    LiteRtTensor tensor,
+    LiteRtQuantizationPerChannel* per_channel_quantization);
 
 // EDGES
 
@@ -256,8 +257,49 @@ LiteRtStatus LiteRtGetSubgraphOps(LiteRtSubgraph subgraph,
                                   LiteRtOpArray* ops);
 
 //
+// LiteRtSignature
+//
+
+// Default signature key. This is the key that is used if the model does not
+// define any signatures.
+LiteRtStatus LiteRtGetDefaultSignatureKey(const char** signature_key);
+
+// Get the signature key string defined in the model.
+LiteRtStatus LiteRtGetSignatureKey(LiteRtSignature signature,
+                                   const char** signature_key);
+
+// Get the associated subgraph index for the given signature.
+LiteRtStatus LiteRtGetSignatureSubgraphIndex(LiteRtSignature signature,
+                                             LiteRtParamIndex* subgraph_index);
+
+// Get the number of inputs for the given signature.
+LiteRtStatus LiteRtGetNumSignatureInputs(LiteRtSignature signature,
+                                         LiteRtParamIndex* num_inputs);
+
+// Get the name of the i-th of input tensor name for the given signature.
+LiteRtStatus LiteRtGetSignatureInputName(LiteRtSignature signature,
+                                         LiteRtParamIndex input_idx,
+                                         const char** input_name);
+
+// Get the number of outputs for the given signature.
+LiteRtStatus LiteRtGetNumSignatureOutputs(LiteRtSignature signature,
+                                          LiteRtParamIndex* num_outputs);
+
+// Get the name of the i-th of output tensor name for the given signature.
+LiteRtStatus LiteRtGetSignatureOutputName(LiteRtSignature signature,
+                                          LiteRtParamIndex output_idx,
+                                          const char** output_name);
+
+//
 // LiteRtModel
 //
+
+LiteRtStatus LiteRtCreateModelFromFile(const char* filename,
+                                       LiteRtModel* model);
+
+LiteRtStatus LiteRtCreateModelFromBuffer(const void* buffer_addr,
+                                         size_t buffer_size,
+                                         LiteRtModel* model);
 
 // Get the metadata buffer associated with given key if it exists.
 LiteRtStatus LiteRtGetModelMetadata(LiteRtModel model, const char* metadata_key,
@@ -278,8 +320,17 @@ LiteRtStatus LiteRtGetModelSubgraph(LiteRtModel model,
                                     LiteRtParamIndex subgraph_index,
                                     LiteRtSubgraph* subgraph);
 
+// Get the number of signatures defined in the model.
+LiteRtStatus LiteRtGetNumModelSignatures(LiteRtModel model,
+                                         LiteRtParamIndex* num_signatures);
+
+// Get the signature at the given index in the model
+LiteRtStatus LiteRtGetModelSignature(LiteRtModel model,
+                                     LiteRtParamIndex signature_index,
+                                     LiteRtSignature* signature);
+
 // Destroy the given model, freeing any memory it owns.
-void LiteRtModelDestroy(LiteRtModel model);
+void LiteRtDestroyModel(LiteRtModel model);
 
 //
 // Utility Types

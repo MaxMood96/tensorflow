@@ -16,17 +16,19 @@
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_CC_LITERT_MODEL_H_
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_buffer_ref.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_detail.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_element_type.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
@@ -176,6 +178,15 @@ class Tensor : public internal::NonOwnedHandle<LiteRtTensor> {
     return per_tensor_quantization;
   }
 
+  LiteRtQuantizationPerChannel PerChannelQuantization() const {
+    internal::AssertEq([&]() { return QTypeId(); },
+                       kLiteRtQuantizationPerChannel);
+    LiteRtQuantizationPerChannel per_channel_quantization;
+    internal::AssertOk(LiteRtGetPerChannelQuantization, Get(),
+                       &per_channel_quantization);
+    return per_channel_quantization;
+  }
+
   bool HasWeights() const {
     auto weights = Weights();
     return !weights.Bytes().empty();
@@ -303,8 +314,54 @@ class Subgraph : public internal::NonOwnedHandle<LiteRtSubgraph> {
   }
 };
 
+// Model signature. C++ equivalent of LiteRtSignature.
+class Signature : public internal::NonOwnedHandle<LiteRtSignature> {
+ public:
+  Signature() = default;
+  explicit Signature(LiteRtSignature signature)
+      : internal::NonOwnedHandle<LiteRtSignature>(signature) {}
+
+  absl::string_view Key() const {
+    const char* key;
+    internal::AssertOk(LiteRtGetSignatureKey, Get(), &key);
+    return key;
+  }
+
+  int SubgraphIndex() const {
+    LiteRtParamIndex subgraph_index;
+    internal::AssertOk(LiteRtGetSignatureSubgraphIndex, Get(), &subgraph_index);
+    return subgraph_index;
+  }
+
+  std::vector<absl::string_view> InputNames() const {
+    LiteRtParamIndex num_inputs;
+    internal::AssertOk(LiteRtGetNumSignatureInputs, Get(), &num_inputs);
+    std::vector<absl::string_view> input_names;
+    input_names.reserve(num_inputs);
+    for (int i = 0; i < num_inputs; ++i) {
+      const char* input_name;
+      internal::AssertOk(LiteRtGetSignatureInputName, Get(), i, &input_name);
+      input_names.push_back(input_name);
+    }
+    return input_names;
+  }
+
+  std::vector<absl::string_view> OutputNames() const {
+    LiteRtParamIndex num_outputs;
+    internal::AssertOk(LiteRtGetNumSignatureOutputs, Get(), &num_outputs);
+    std::vector<absl::string_view> output_names;
+    output_names.reserve(num_outputs);
+    for (int i = 0; i < num_outputs; ++i) {
+      const char* output_name;
+      internal::AssertOk(LiteRtGetSignatureOutputName, Get(), i, &output_name);
+      output_names.push_back(output_name);
+    }
+    return output_names;
+  }
+};
+
 // Model. C++ equivalent of LiteRtModel.
-class Model : public internal::Handle<LiteRtModel, LiteRtModelDestroy> {
+class Model : public internal::Handle<LiteRtModel, LiteRtDestroyModel> {
  public:
   Model() = default;
 
@@ -314,6 +371,25 @@ class Model : public internal::Handle<LiteRtModel, LiteRtModelDestroy> {
 
   static Model CreateFromNonOwnedHandle(LiteRtModel model) {
     return Model(model, /*owned=*/false);
+  }
+
+  static Expected<Model> CreateFromFile(const std::string& filename) {
+    LiteRtModel model;
+    if (auto status = LiteRtCreateModelFromFile(filename.c_str(), &model);
+        status != kLiteRtStatusOk) {
+      return Unexpected(status, "Failed to load model from file");
+    }
+    return CreateFromOwnedHandle(model);
+  }
+
+  static Expected<Model> CreateFromBuffer(BufferRef<uint8_t> buffer) {
+    LiteRtModel model;
+    if (auto status =
+            LiteRtCreateModelFromBuffer(buffer.Data(), buffer.Size(), &model);
+        status != kLiteRtStatusOk) {
+      return Unexpected(status, "Failed to load model from buffer");
+    }
+    return CreateFromOwnedHandle(model);
   }
 
   Expected<absl::Span<const uint8_t>> Metadata(
@@ -349,11 +425,64 @@ class Model : public internal::Handle<LiteRtModel, LiteRtModelDestroy> {
     return litert::Subgraph(subgraph);
   }
 
+  Expected<class Subgraph> Subgraph(absl::string_view signature_key) {
+    auto signature = FindSignature(signature_key);
+    if (!signature) {
+      return Unexpected(kLiteRtStatusErrorNotFound, "Signature not found");
+    }
+    return Subgraph(signature->SubgraphIndex());
+  }
+
+  // Returns the list of signatures defined in the model.
+  Expected<std::vector<class Signature>> GetSignatures() const {
+    LiteRtParamIndex num_signatures;
+    internal::AssertOk(LiteRtGetNumModelSignatures, Get(), &num_signatures);
+    std::vector<class Signature> signatures;
+    signatures.reserve(num_signatures);
+    for (int i = 0; i < num_signatures; ++i) {
+      LiteRtSignature lite_rt_signature;
+      internal::AssertOk(LiteRtGetModelSignature, Get(), i, &lite_rt_signature);
+      Signature signature(lite_rt_signature);
+      signatures.push_back(std::move(signature));
+    }
+    return std::move(signatures);
+  }
+
+  // Returns the signature at the given index.
+  Expected<class Signature> GetSignature(size_t signature_index) const {
+    LiteRtSignature lite_rt_signature;
+    internal::AssertOk(LiteRtGetModelSignature, Get(), signature_index,
+                       &lite_rt_signature);
+    return Signature(lite_rt_signature);
+  }
+
+  Expected<class Signature> FindSignature(
+      absl::string_view signature_key) const {
+    LiteRtParamIndex num_signatures;
+    internal::AssertOk(LiteRtGetNumModelSignatures, Get(), &num_signatures);
+    for (int i = 0; i < num_signatures; ++i) {
+      LiteRtSignature lite_rt_signature;
+      internal::AssertOk(LiteRtGetModelSignature, Get(), i, &lite_rt_signature);
+      const char* key_cstr;
+      internal::AssertOk(LiteRtGetSignatureKey, lite_rt_signature, &key_cstr);
+      if (absl::string_view(key_cstr) == signature_key) {
+        return Signature(lite_rt_signature);
+      }
+    }
+    return Unexpected(kLiteRtStatusErrorNotFound, "Signature not found");
+  }
+
+  static absl::string_view DefaultSignatureKey() {
+    const char* key;
+    internal::AssertOk(LiteRtGetDefaultSignatureKey, &key);
+    return key;
+  }
+
  private:
   // Parameter `owned` indicates if the created TensorBuffer object should take
   // ownership of the provided `tensor_buffer` handle.
   Model(LiteRtModel model, bool owned)
-      : internal::Handle<LiteRtModel, LiteRtModelDestroy>(model, owned) {}
+      : internal::Handle<LiteRtModel, LiteRtDestroyModel>(model, owned) {}
 };
 
 }  // namespace litert

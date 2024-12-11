@@ -16,7 +16,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,7 +33,10 @@
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_model.h"
+#include "tensorflow/lite/experimental/litert/compiler/plugin/algo.h"
+#include "tensorflow/lite/experimental/litert/core/byte_code_util.h"
 #include "tensorflow/lite/experimental/litert/core/dynamic_loading.h"
+#include "tensorflow/lite/experimental/litert/core/filesystem.h"
 #include "tensorflow/lite/experimental/litert/core/model/model.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_compiler_plugin.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_compiler_plugin_api.h"
@@ -179,7 +184,10 @@ Expected<SmallVec<CompilerPlugin>> CompilerPlugin::LoadPlugins(
     absl::Span<const absl::string_view> lib_search_paths) {
   std::vector<std::string> plugin_lib_paths;
   for (auto search_path : lib_search_paths) {
-    LITERT_EXPECT_OK(FindLiteRtSharedLibs(search_path, plugin_lib_paths));
+    // Skip paths that are not valid.
+    if (Exists(search_path)) {
+      LITERT_EXPECT_OK(FindLiteRtSharedLibs(search_path, plugin_lib_paths));
+    }
   }
 
   SmallVec<CompilerPlugin> loaded_plugins;
@@ -195,6 +203,23 @@ Expected<SmallVec<CompilerPlugin>> CompilerPlugin::LoadPlugins(
   }
 
   return loaded_plugins;
+}
+
+Expected<CompilerPlugin> CompilerPlugin::LoadPlugin(
+    absl::Span<const absl::string_view> lib_search_paths,
+    absl::string_view soc_manufacturer) {
+  auto compiler_plugins = LoadPlugins(lib_search_paths);
+  if (!compiler_plugins) {
+    return compiler_plugins.Error();
+  }
+
+  for (auto& plugin : *compiler_plugins) {
+    if (plugin.SocManufacturer() == soc_manufacturer) {
+      return std::move(plugin);
+    }
+  }
+
+  return Error(kLiteRtStatusErrorNotFound);
 }
 
 CompilerPlugin::CompilerPlugin(CompilerPlugin&& other)
@@ -252,17 +277,19 @@ Expected<std::vector<LiteRtOp>> CompilerPlugin::PartitionModel(
 }
 
 LiteRtStatus CompilerPlugin::Compile(
-    const absl::string_view soc_model,
+    std::optional<absl::string_view> soc_model,
     const std::vector<LiteRtSubgraph>& partitions, std::ostream& byte_code_out,
     std::vector<std::string>& call_info_out) {
   CompiledResult result = MakeResult();
+
+  const char* soc_model_str = soc_model ? soc_model->data() : nullptr;
 
   // Compile given partitions into result.
   // TODO: Use const where appropriate in the C compiler plugin api.
   LiteRtSubgraphArray partitions_arr =
       const_cast<LiteRtSubgraphArray>(partitions.data());
   if (auto stat = plugin_api_.compiler_plugin_compile(
-          plugin_handle_, soc_model.data(), partitions_arr, partitions.size(),
+          plugin_handle_, soc_model_str, partitions_arr, partitions.size(),
           &result.compiled_result_handle_);
       stat != kLiteRtStatusOk) {
     return stat;
@@ -301,6 +328,77 @@ LiteRtStatus CompilerPlugin::Compile(
   }
 
   return kLiteRtStatusOk;
+}
+
+Expected<OwningBufferRef<uint8_t>> ApplyPlugin(
+    CompilerPlugin& compiler_plugin, Model& model,
+    std::optional<absl::string_view> soc_model) {
+  // Get selected ops from plugin.
+  auto partition = compiler_plugin.PartitionModel(model);
+  if (!partition) {
+    LITERT_LOG(LITERT_ERROR, "Failed to get partitions from plugin");
+    return Error(kLiteRtStatusErrorRuntimeFailure);
+  }
+
+  // Group selected ops into partitions.
+  auto grouped_partitions = GroupPartitions(*partition);
+  if (grouped_partitions.empty()) {
+    LITERT_LOG(LITERT_ERROR, "Failed to group partitions");
+    return Error(kLiteRtStatusErrorRuntimeFailure);
+  }
+
+  if (grouped_partitions.size() > 1) {
+    LITERT_LOG(LITERT_ERROR, "Apply on multiple partitions not supported yet.");
+    return Error(kLiteRtStatusErrorUnsupported);
+  }
+
+  // Outline the partitions into new subgraphs.
+  std::vector<LiteRtOp> custom_ops;
+  for (auto& partition : grouped_partitions) {
+    auto custom_op =
+        OutlinePartition(model.Get()->subgraphs.front(),
+                         &model.Get()->subgraphs.emplace_back(), partition);
+    custom_ops.push_back(custom_op);
+  }
+
+  // Pass new subgraphs to the plugin for compilation.
+  std::vector<LiteRtSubgraph> compilation_input;
+  for (auto it = model.Get()->subgraphs.begin() + 1;
+       it < model.Get()->subgraphs.end(); ++it) {
+    compilation_input.push_back(&*it);
+  }
+
+  // Compile partitions with plugin.
+  std::stringstream byte_code;
+  std::vector<std::string> exec_info;
+  if (auto status = compiler_plugin.Compile(soc_model, compilation_input,
+                                            byte_code, exec_info);
+      status != kLiteRtStatusOk) {
+    LITERT_LOG(LITERT_ERROR, "Failed to compile partitions.");
+    return Error(status);
+  }
+
+  if (exec_info.size() != custom_ops.size()) {
+    LITERT_LOG(LITERT_ERROR,
+               "Compilation did not return exec_info for every partition");
+    return Error(kLiteRtStatusErrorRuntimeFailure);
+  }
+
+  model.Get()->custom_op_code = kLiteRtDispatchOpCustomCode;
+
+  // Attach entry point info to the custom ops.
+  auto custom_op_it = custom_ops.begin();
+  auto exec_info_it = exec_info.begin();
+  for (; custom_op_it < custom_ops.end(); custom_op_it++, exec_info_it++) {
+    LiteRtOp custom_op = *custom_op_it;
+    const auto& exec_info = *exec_info_it;
+    custom_op->custom_options = OwningBufferRef<uint8_t>(exec_info.data());
+  }
+
+  const auto byte_code_str = byte_code.str();
+  return OwningBufferRef<uint8_t>(
+      reinterpret_cast<const uint8_t*>(byte_code_str.data()),
+      byte_code_str.size());
 }
 
 }  // namespace litert::internal

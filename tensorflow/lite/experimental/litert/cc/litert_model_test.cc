@@ -20,6 +20,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
@@ -81,6 +82,42 @@ TEST(CcModelTest, SimpleModel) {
 
   auto main_subgraph = model.MainSubgraph();
   EXPECT_EQ(main_subgraph->Get(), subgraph_0->Get());
+}
+
+//===----------------------------------------------------------------------===//
+//                                CC Signature                                //
+//===----------------------------------------------------------------------===//
+
+TEST(CcSignatureTest, Basic) {
+  auto model = testing::LoadTestFileModel("one_mul.tflite");
+
+  auto signatures = model.GetSignatures();
+  ASSERT_TRUE(signatures);
+  ASSERT_EQ(signatures->size(), 1);
+  auto& signature = signatures->at(0);
+  EXPECT_THAT(signature.Key(), Model::DefaultSignatureKey());
+  auto input_names = signature.InputNames();
+  EXPECT_THAT(input_names[0], "arg0");
+  EXPECT_THAT(input_names[1], "arg1");
+  auto output_names = signature.OutputNames();
+  EXPECT_THAT(output_names[0], "tfl.mul");
+}
+
+TEST(CcSignatureTest, Lookup) {
+  auto model = testing::LoadTestFileModel("one_mul.tflite");
+
+  {
+    auto signature = model.FindSignature("nonexistent");
+    ASSERT_FALSE(signature);
+  }
+  auto signature = model.FindSignature(Model::DefaultSignatureKey());
+  ASSERT_TRUE(signature);
+  EXPECT_THAT(signature->Key(), Model::DefaultSignatureKey());
+  auto input_names = signature->InputNames();
+  EXPECT_THAT(input_names[0], "arg0");
+  EXPECT_THAT(input_names[1], "arg1");
+  auto output_names = signature->OutputNames();
+  EXPECT_THAT(output_names[0], "tfl.mul");
 }
 
 //===----------------------------------------------------------------------===//
@@ -242,6 +279,36 @@ TEST(CcTensorTest, QuantizationPerTensor) {
   const auto per_tensor_quantization = tensor.PerTensorQuantization();
   EXPECT_EQ(per_tensor_quantization.scale, kScale);
   EXPECT_EQ(per_tensor_quantization.zero_point, kZeroPoint);
+}
+
+TEST(CcTensorTest, QuantizationPerChannel) {
+  static constexpr auto kNumChannels = 2;
+  static constexpr auto kQuantizedDimension = 0;
+  static constexpr float kScales[kNumChannels] = {1.0, 2.0};
+  static constexpr int64_t kZeroPoints[kNumChannels] = {0, 0};
+
+  LiteRtTensorT litert_tensor;
+  litert_tensor.q_type_id = kLiteRtQuantizationPerChannel;
+  litert_tensor.q_type_detail.per_channel.scales = const_cast<float*>(kScales);
+  litert_tensor.q_type_detail.per_channel.zero_points =
+      const_cast<int64_t*>(kZeroPoints);
+  litert_tensor.q_type_detail.per_channel.num_channels = kNumChannels;
+  litert_tensor.q_type_detail.per_channel.quantized_dimension =
+      kQuantizedDimension;
+
+  Tensor tensor(&litert_tensor);
+  ASSERT_EQ(tensor.QTypeId(), kLiteRtQuantizationPerChannel);
+  ASSERT_TRUE(tensor.HasQuantization());
+
+  const auto per_channel_quantization = tensor.PerChannelQuantization();
+  EXPECT_THAT(
+      absl::MakeConstSpan(per_channel_quantization.scales, kNumChannels),
+      ::testing::ElementsAreArray(kScales));
+  EXPECT_THAT(
+      absl::MakeConstSpan(per_channel_quantization.zero_points, kNumChannels),
+      ::testing::ElementsAreArray(kZeroPoints));
+  EXPECT_EQ(per_channel_quantization.num_channels, kNumChannels);
+  EXPECT_EQ(per_channel_quantization.quantized_dimension, kQuantizedDimension);
 }
 
 //===----------------------------------------------------------------------===//

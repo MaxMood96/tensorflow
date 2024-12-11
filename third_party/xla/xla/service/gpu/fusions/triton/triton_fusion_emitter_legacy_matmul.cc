@@ -59,6 +59,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/utils/hlo_query.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/literal.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/mlir_hlo/mhlo/transforms/map_mhlo_to_scalar_op.h"
@@ -67,7 +68,6 @@ limitations under the License.
 #include "xla/service/algorithm_util.h"
 #include "xla/service/gpu/fusions/triton/emitter_helpers.h"
 #include "xla/service/gpu/fusions/triton/xla_triton_ops.h"
-#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/matmul_indexing_utils.h"
@@ -168,8 +168,9 @@ ma::ConstantOp CreateConst(ImplicitLocOpBuilder& b, Type type, T value,
   auto tensor_type = mlir::RankedTensorType::get(shape, type);
   if (auto int_type = mlir::dyn_cast<mlir::IntegerType>(type)) {
     return b.create<ma::ConstantOp>(mlir::DenseElementsAttr::get(
-        tensor_type, mlir::APInt(int_type.getIntOrFloatBitWidth(), value,
-                                 /*isSigned=*/std::is_signed_v<T>)));
+        tensor_type,
+        mlir::APInt(int_type.getIntOrFloatBitWidth(), value,
+                    /*isSigned=*/std::is_signed_v<T>, /*implicitTrunc=*/true)));
   }
   if (auto float_type = mlir::dyn_cast<mlir::FloatType>(type)) {
     return b.create<ma::ConstantOp>(mlir::DenseElementsAttr::get(

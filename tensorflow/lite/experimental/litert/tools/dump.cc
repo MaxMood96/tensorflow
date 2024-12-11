@@ -37,6 +37,8 @@ namespace litert::internal {
 
 namespace {
 
+static constexpr int kMaxDisplayCount = 16;
+
 void DumpNode(const LiteRtTensorT& tensor, std::ostream& out) {
   switch (tensor.type_id) {
     case kLiteRtRankedTensorType:
@@ -143,6 +145,18 @@ void Dump(LiteRtOpCode code, std::ostream& out) {
       break;
     case kLiteRtOpCodeTflFullyConnected:
       out << "TFL_FULLY_CONNECTED";
+      break;
+    case kLiteRtOpCodeTflEmbeddingLookup:
+      out << "TFL_EMBEDDING_LOOKUP";
+      break;
+    case kLiteRtOpCodeTflLogicalAnd:
+      out << "TFL_LOGICAL_AND";
+      break;
+    case kLiteRtOpCodeTflLess:
+      out << "TFL_LESS";
+      break;
+    case kLiteRtOpCodeTflGreater:
+      out << "TFL_GREATER";
       break;
     default:
       out << "UKNOWN_OP_CODE: " << code;
@@ -389,6 +403,7 @@ void DumpOptions(const LiteRtOpT& op, std::ostream& out) {
 }
 
 void Dump(Quantization quantization, std::ostream& out) {
+  int max_display_count;
   switch (quantization.first) {
     case kLiteRtQuantizationNone:
       return;
@@ -396,6 +411,25 @@ void Dump(Quantization quantization, std::ostream& out) {
       out << absl::StreamFormat(" <q PerTensor [ .z = %ld, .s = %f ]>",
                                 quantization.second.per_tensor.zero_point,
                                 quantization.second.per_tensor.scale);
+      return;
+    case kLiteRtQuantizationPerChannel:
+      max_display_count =
+          kMaxDisplayCount < quantization.second.per_channel.num_channels
+              ? kMaxDisplayCount
+              : quantization.second.per_channel.num_channels;
+      out << absl::StreamFormat(" <q PerChannel [ .z = [ ");
+      for (int i = 0; i < max_display_count; ++i) {
+        out << absl::StreamFormat(
+            "%ld, ", quantization.second.per_channel.zero_points[i]);
+      }
+      out << "...], .s = [ ";
+      for (int i = 0; i < max_display_count; ++i) {
+        out << absl::StreamFormat("%f, ",
+                                  quantization.second.per_channel.scales[i]);
+      }
+      out << "...], ";
+      out << absl::StreamFormat(
+          ".d = %d>", quantization.second.per_channel.quantized_dimension);
       return;
     default:
       out << " <q UNKNOWN>";

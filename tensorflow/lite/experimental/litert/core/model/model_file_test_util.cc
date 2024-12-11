@@ -43,6 +43,22 @@ bool EqualsFbQuantizationDetail<LiteRtQuantizationPerTensor>(
          litert_quantization.scale == tfl_q_params->second;
 }
 
+template <>
+bool EqualsFbQuantizationDetail<LiteRtQuantizationPerChannel>(
+    LiteRtQuantizationPerChannel litert_quantization,
+    const TflQuantization* tfl_quantization) {
+  auto tfl_q_params = AsPerChannelQparams(tfl_quantization);
+  if (!tfl_q_params) return false;
+  auto [quantized_dimension, num_channels, zero_points, scales] = *tfl_q_params;
+  for (int i = 0; i < litert_quantization.num_channels; ++i) {
+    if (litert_quantization.zero_points[i] != zero_points->data()[i] ||
+        litert_quantization.scales[i] != scales->data()[i]) {
+      return false;
+    }
+  }
+  return litert_quantization.quantized_dimension == quantized_dimension &&
+         litert_quantization.num_channels == num_channels;
+}
 template <class LiteRtTenzorType>
 bool EqualsFbTensorTypeDetail(LiteRtTenzorType litert_tensor_type,
                               const TflTensorType& tfl_tensor) {
@@ -92,6 +108,9 @@ bool EqualsFbQuantization(const Quantization& litert_quantization,
     case kLiteRtQuantizationPerTensor:
       return EqualsFbQuantizationDetail(litert_quantization.second.per_tensor,
                                         tfl_quantization);
+    case kLiteRtQuantizationPerChannel:
+      return EqualsFbQuantizationDetail(litert_quantization.second.per_channel,
+                                        tfl_quantization);
     case kLiteRtQuantizationNone:
       return !IsQuantized(tfl_quantization);
     default:
@@ -118,10 +137,10 @@ bool EqualsFbTensorType(const TensorType& litert_tensor_type,
 // Compare litert op to flatbuffer op along with their input/output tensors
 // types and quantization. Takes a callback to lookup tfl tensors the indices
 // within the tfl op.
-bool EqualsFbOp(const Op& litert_op, const TflOp& tfl_op,
+bool EqualsFbOp(const LiteRtOpT& litert_op, const TflOp& tfl_op,
                 GetTflTensor get_tfl_tensor) {
-  auto litert_inputs = litert_op.Inputs();
-  auto litert_outputs = litert_op.Outputs();
+  const auto& litert_inputs = litert_op.inputs;
+  const auto& litert_outputs = litert_op.outputs;
 
   auto check_tensors = [&](auto& litert_tensors, auto& tfl_tensors) {
     if (litert_tensors.size() != tfl_tensors.size()) {
@@ -131,7 +150,7 @@ bool EqualsFbOp(const Op& litert_op, const TflOp& tfl_op,
 
     for (auto i = 0; i < litert_tensors.size(); ++i) {
       const auto& fb_tensor = get_tfl_tensor(tfl_tensors.at(i)).get();
-      const auto& litert_tensor = *litert_tensors.at(i).Get();
+      const auto& litert_tensor = *litert_tensors.at(i);
 
       if (!EqualsFbTensorType(
               {litert_tensor.type_id, litert_tensor.type_detail},

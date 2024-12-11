@@ -16,12 +16,12 @@
 #include <filesystem>  // NOLINT
 #include <fstream>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>  // IWYU pragma: keep
 #include <gtest/gtest.h>
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
@@ -37,6 +37,7 @@
 #include "tensorflow/lite/experimental/litert/core/model/model_serialize.h"
 #include "tensorflow/lite/experimental/litert/core/util/flatbuffer_tools.h"
 #include "tensorflow/lite/experimental/litert/test/common.h"
+#include "tensorflow/lite/experimental/litert/test/test_macros.h"
 #include "tensorflow/lite/experimental/litert/test/test_models.h"
 #include "tensorflow/lite/experimental/litert/tools/dump.h"
 
@@ -45,7 +46,7 @@ namespace {
 
 using ::litert::testing::ValidateTopology;
 
-Model LoadModelThroughRoundTrip(std::string_view path) {
+Model LoadModelThroughRoundTrip(absl::string_view path) {
   auto model = litert::testing::LoadTestFileModel(path);
 
   OwningBufferRef buf;
@@ -57,7 +58,7 @@ Model LoadModelThroughRoundTrip(std::string_view path) {
   // Reload model.
   LiteRtModel result = nullptr;
   LITERT_CHECK_STATUS_OK(
-      LiteRtLoadModelFromMemory(buf.Data(), buf.Size(), &result));
+      LiteRtCreateModelFromBuffer(buf.Data(), buf.Size(), &result));
 
   return Model::CreateFromOwnedHandle(result);
 }
@@ -86,7 +87,7 @@ class TopologyTest : public ::testing::TestWithParam<LiteRtModel> {
 
 TEST(LiteRtModelTest, TestLoadTestDataBadFilepath) {
   LiteRtModel model = nullptr;
-  LITERT_ASSERT_STATUS_HAS_CODE(LiteRtLoadModelFromFile("bad_path", &model),
+  LITERT_ASSERT_STATUS_HAS_CODE(LiteRtCreateModelFromFile("bad_path", &model),
                                 kLiteRtStatusErrorFileIO);
 }
 
@@ -107,7 +108,7 @@ TEST(LiteRtModelTest, TestLoadTestDataBadFileData) {
 
   LiteRtModel model = nullptr;
   LITERT_ASSERT_STATUS_HAS_CODE(
-      LiteRtLoadModelFromFile(test_file_path.c_str(), &model),
+      LiteRtCreateModelFromFile(test_file_path.c_str(), &model),
       kLiteRtStatusErrorInvalidFlatbuffer);
   // NOLINTEND
 }
@@ -115,8 +116,8 @@ TEST(LiteRtModelTest, TestLoadTestDataBadFileData) {
 TEST(TestSerializeModel, TestMetadata) {
   auto model = litert::testing::LoadTestFileModel("add_simple.tflite");
 
-  constexpr static std::string_view kMetadataName = "an_soc_manufacturer";
-  constexpr static std::string_view kMetadataData = "My_Meta_Data";
+  constexpr static absl::string_view kMetadataName = "an_soc_manufacturer";
+  constexpr static absl::string_view kMetadataData = "My_Meta_Data";
 
   LITERT_ASSERT_STATUS_OK(model.Get()->PushMetadata(
       kMetadataName, OwningBufferRef<uint8_t>(kMetadataData)));
@@ -124,8 +125,8 @@ TEST(TestSerializeModel, TestMetadata) {
   auto serialized = SerializeModel(std::move(model));
   EXPECT_TRUE(VerifyFlatbuffer(serialized->Span()));
 
-  auto re_loaded = LoadModelFromMemory(*serialized);
-  auto metadata = re_loaded->Get()->FindMetadata(kMetadataName);
+  auto re_loaded = LoadModelFromBuffer(*serialized);
+  auto metadata = re_loaded->get()->FindMetadata(kMetadataName);
   EXPECT_EQ(metadata->StrView(), kMetadataData);
 }
 
@@ -266,17 +267,17 @@ using ModelLoadOpCheckTest = TestWithModelPath;
 TEST_P(ModelLoadOpCheckTest, CheckOps) {
   const auto model_path = GetTestModelPath();
 
-  auto expected_fb = FlatbufferWrapper::CreateFromTflFile(model_path);
-  ASSERT_TRUE(expected_fb);
+  auto flatbuffer = FlatbufferWrapper::CreateFromTflFile(model_path);
+  ASSERT_TRUE(flatbuffer);
+  auto expected_fb = flatbuffer->get()->Unpack();
 
   auto model = LoadModelFromFile(model_path);
   ASSERT_TRUE(model);
 
-  const auto subgraph = model->MainSubgraph();
-  const auto ops = subgraph->Ops();
+  const auto& subgraph = model->get()->MainSubgraph();
+  const auto& ops = subgraph.ops;
 
-  const auto& fb_subgraph =
-      *expected_fb->get()->UnpackedModel().subgraphs.front();
+  const auto& fb_subgraph = *expected_fb->subgraphs.front();
   const auto& fb_ops = fb_subgraph.operators;
   const auto& fb_tensors = fb_subgraph.tensors;
 
@@ -287,8 +288,8 @@ TEST_P(ModelLoadOpCheckTest, CheckOps) {
   };
 
   for (auto i = 0; i < ops.size(); ++i) {
-    Dump(*ops.at(i).Get());
-    ASSERT_TRUE(EqualsFbOp(ops.at(i), *fb_ops.at(i), get_tfl_tensor));
+    Dump(*ops.at(i));
+    ASSERT_TRUE(EqualsFbOp(*ops.at(i), *fb_ops.at(i), get_tfl_tensor));
   }
 }
 
@@ -308,20 +309,23 @@ using ModelSerializeOpCheckTest = TestWithModelPath;
 TEST_P(ModelSerializeOpCheckTest, CheckOps) {
   const auto model_path = GetTestModelPath();
 
-  auto expected_fb = FlatbufferWrapper::CreateFromTflFile(model_path);
-  ASSERT_TRUE(expected_fb);
+  auto flatbuffer = FlatbufferWrapper::CreateFromTflFile(model_path);
+  ASSERT_TRUE(flatbuffer);
+  auto expected_fb = flatbuffer->get()->Unpack();
 
-  auto serialized = SerializeModel(*LoadModelFromFile(model_path));
-  auto actual_fb = FlatbufferWrapper::CreateFromBuffer(*serialized);
-  ASSERT_TRUE(actual_fb);
+  auto model = LoadModelFromFile(model_path);
+  ASSERT_TRUE(model);
 
-  const auto& expected_fb_subgraph =
-      *expected_fb->get()->UnpackedModel().subgraphs.front();
+  auto serialized = SerializeModel(std::move(**model));
+  auto serialized_fb = FlatbufferWrapper::CreateFromBuffer(*serialized);
+  ASSERT_TRUE(serialized_fb);
+  auto actual_fb = serialized_fb->get()->Unpack();
+
+  const auto& expected_fb_subgraph = *expected_fb->subgraphs.front();
   const auto& expected_fb_ops = expected_fb_subgraph.operators;
   const auto& expected_fb_tensors = expected_fb_subgraph.tensors;
 
-  const auto& actual_fb_subgraph =
-      *actual_fb->get()->UnpackedModel().subgraphs.front();
+  const auto& actual_fb_subgraph = *actual_fb->subgraphs.front();
   const auto& actual_fb_ops = actual_fb_subgraph.operators;
   const auto& actual_fb_tensors = actual_fb_subgraph.tensors;
 

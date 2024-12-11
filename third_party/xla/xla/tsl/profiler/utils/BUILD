@@ -168,6 +168,7 @@ cc_library(
     deps = [
         ":math_utils",
         ":timespan",
+        ":xplane_schema",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/meta:type_traits",
         "@com_google_absl//absl/strings",
@@ -297,6 +298,7 @@ cc_library(
     visibility = internal_visibility([":friends"]),
     deps = [
         ":tf_xplane_visitor",
+        ":timespan",
         ":xplane_builder",
         ":xplane_schema",
         ":xplane_utils",
@@ -510,6 +512,7 @@ filegroup(
     name = "mobile_srcs_no_runtime",
     srcs = [
         "no_init.h",
+        "trace_filter_utils.h",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = ["//visibility:public"],

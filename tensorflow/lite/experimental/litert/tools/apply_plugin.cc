@@ -37,7 +37,6 @@
 #include "tensorflow/lite/experimental/litert/compiler/plugin/algo.h"
 #include "tensorflow/lite/experimental/litert/compiler/plugin/compiler_plugin.h"
 #include "tensorflow/lite/experimental/litert/core/byte_code_util.h"
-#include "tensorflow/lite/experimental/litert/core/model/model_load.h"
 #include "tensorflow/lite/experimental/litert/core/model/model_serialize.h"
 #include "tensorflow/lite/experimental/litert/core/util/flatbuffer_tools.h"
 #include "tensorflow/lite/experimental/litert/tools/dump.h"
@@ -54,7 +53,6 @@ using ::litert::internal::GroupPartitions;
 using ::litert::internal::kByteCodeMetadataKey;
 using ::litert::internal::kLiteRtBuildStampKey;
 using ::litert::internal::kLiteRtDispatchOpCustomCode;
-using ::litert::internal::LoadModelFromFile;
 using ::litert::internal::MakeBuildStamp;
 using ::litert::internal::MakeByteCodePlaceholder;
 using ::litert::internal::MakeExecInfo;
@@ -191,7 +189,7 @@ Expected<Model> LoadModel(Context& ctx) {
   ctx.Dump().Start("Load Model");
   ctx.Dump().Labeled() << absl::StreamFormat("Loading model from: %s\n",
                                              ctx.Run().model.value());
-  auto model_result = LoadModelFromFile(ctx.Run().model->data());
+  auto model_result = Model::CreateFromFile(ctx.Run().model->data());
   if (!model_result.HasValue()) {
     ctx.Dump().Labeled() << "Failed to load model from file.";
     ctx.Dump().Fail();
@@ -218,17 +216,17 @@ std::vector<LiteRtOp> ApplyPartition(Context& ctx, const Model& model,
     Dump(*it, ctx.Dump().Display());
   }
 
-  auto partiion = plugin.PartitionModel(model);
-  if (!partiion.HasValue()) {
+  auto partition = plugin.PartitionModel(model);
+  if (!partition.HasValue()) {
     return {};
   }
-  auto grouped_partitions = GroupPartitions(partiion.Value());
+  auto grouped_partitions = GroupPartitions(partition.Value());
   if (grouped_partitions.empty()) {
     return {};
   }
   ctx.Dump().Labeled() << absl::StreamFormat(
       "Plugin selected %lu ops, yielding %lu partitions\n",
-      partiion.Value().size(), grouped_partitions.size());
+      partition.Value().size(), grouped_partitions.size());
 
   std::vector<LiteRtOp> res;
   for (auto& partition : grouped_partitions) {
@@ -574,7 +572,7 @@ LiteRtStatus Apply(Context& ctx) {
   // replacing use with single custom op..
   auto custom_ops = ApplyPartition(ctx, *model, *plugin);
   LITERT_ENSURE(!custom_ops.empty(), kLiteRtStatusErrorGraphModification,
-                "Failed to partiion graph.");
+                "Failed to partition graph.");
   // All new subgraphs to be compiled are appended to the model's subgraphs.
   std::vector<LiteRtSubgraph> compilation_input;
   for (auto it = model->Get()->subgraphs.begin() + kNumInputSubgraphs;
@@ -598,6 +596,19 @@ LiteRtStatus Apply(Context& ctx) {
 
   BufferRef<uint8_t> compiled_buffer(compilation_out.view().data(),
                                      compilation_out.view().size());
+
+  // For each custom op, if the input tensor is a constant, it should be removed
+  // from the input list.
+  for (auto& custom_op : custom_ops) {
+    std::vector<LiteRtTensor> new_inputs;
+    for (auto& input : custom_op->inputs) {
+      litert::Tensor input_tensor = litert::Tensor(input);
+      if (!input_tensor.IsConstant()) {
+        new_inputs.push_back(input);
+      }
+    }
+    custom_op->inputs = new_inputs;
+  }
 
   ctx.SwapOut(out);
   if (ctx.Serialization() == Serialization::kMetadata) {
