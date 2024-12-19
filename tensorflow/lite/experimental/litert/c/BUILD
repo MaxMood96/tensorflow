@@ -23,6 +23,23 @@ cc_library(
 )
 
 cc_library(
+    name = "litert_any",
+    hdrs = ["litert_any.h"],
+)
+
+cc_library(
+    name = "litert_environment",
+    srcs = ["litert_environment.cc"],
+    hdrs = ["litert_environment.h"],
+    deps = [
+        ":litert_any",
+        ":litert_common",
+        "//tensorflow/lite/experimental/litert/core:environment",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
     name = "litert_logging",
     srcs = [
         "litert_logging.cc",
@@ -49,17 +66,30 @@ cc_test(
 )
 
 cc_library(
-    name = "litert_model",
-    srcs = ["litert_model.cc"],
-    hdrs = ["litert_model.h"],
+    name = "litert_layout",
+    hdrs = ["litert_layout.h"],
     deps = [
         ":litert_common",
         ":litert_op_code",
         "//tensorflow/lite/core/c:c_api_types",
         "//tensorflow/lite/experimental/litert/cc:litert_buffer_ref",
         "//tensorflow/lite/experimental/litert/cc:litert_macros",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+cc_library(
+    name = "litert_model",
+    srcs = ["litert_model.cc"],
+    hdrs = ["litert_model.h"],
+    deps = [
+        ":litert_common",
+        ":litert_layout",
+        ":litert_op_code",
+        "//tensorflow/lite/core/c:c_api_types",
+        "//tensorflow/lite/experimental/litert/cc:litert_buffer_ref",
         "//tensorflow/lite/experimental/litert/core/model",
-        "//tensorflow/lite/schema:schema_fbs",
+        "//tensorflow/lite/experimental/litert/core/model:model_load",
         "@com_google_absl//absl/strings:string_view",
     ],
 )
@@ -72,10 +102,9 @@ cc_test(
         ":litert_model",
         ":litert_op_code",
         "//tensorflow/lite/experimental/litert/cc:litert_buffer_ref",
-        "//tensorflow/lite/experimental/litert/cc:litert_layout",
         "//tensorflow/lite/experimental/litert/core/model",
-        "//tensorflow/lite/experimental/litert/test:common",
-        "//tensorflow/lite/schema:schema_fbs",
+        "//tensorflow/lite/experimental/litert/core/util:flatbuffer_tools",
+        "//tensorflow/lite/experimental/litert/test:test_macros",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
@@ -111,9 +140,7 @@ cc_test(
     ],
     tags = ["no_oss"],
     deps = [
-        ":litert_model",
         ":litert_options",
-        "//tensorflow/lite/experimental/litert/cc:litert_model_predicates",
         "//tensorflow/lite/experimental/litert/test:common",
         "@com_google_googletest//:gtest_main",
     ],
@@ -191,6 +218,57 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "litert_compiled_model_options",
+    hdrs = [
+        "litert_compiled_model_options.h",
+    ],
+    deps = [
+        ":litert_common",
+    ],
+)
+
+cc_library(
+    name = "litert_compiled_model",
+    srcs = ["litert_compiled_model.cc"],
+    hdrs = [
+        "litert_compiled_model.h",
+    ],
+    deps = [
+        ":litert_common",
+        ":litert_compiled_model_options",
+        ":litert_logging",
+        ":litert_model",
+        ":litert_tensor_buffer",
+        "//tensorflow/lite/c:c_api_types",
+        "//tensorflow/lite/experimental/litert/runtime:compiled_model",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+cc_test(
+    name = "litert_compiled_model_test",
+    srcs = [
+        "litert_compiled_model_test.cc",
+    ],
+    data = [
+        "//tensorflow/lite/experimental/litert/test:testdata/simple_model.tflite",
+    ],
+    deps = [
+        ":litert_common",
+        ":litert_compiled_model",
+        ":litert_compiled_model_options",
+        ":litert_model",
+        ":litert_tensor_buffer",
+        "//tensorflow/lite/experimental/litert/test:common",
+        "//tensorflow/lite/experimental/litert/test:simple_model",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 filegroup(
     name = "litert_model_srcs",
     srcs = ["litert_model.cc"],
@@ -210,7 +288,12 @@ cc_test(
     copts = ["--std=c11"],
     linkopts = ["-ldl"],
     deps = [
+        ":litert_any",
         ":litert_common",
+        ":litert_compiled_model",
+        ":litert_compiled_model_options",
+        ":litert_dispatch_delegate",
+        ":litert_layout",
         ":litert_logging",
         ":litert_model",
         ":litert_op_code",

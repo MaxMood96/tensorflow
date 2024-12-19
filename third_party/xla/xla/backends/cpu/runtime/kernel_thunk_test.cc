@@ -17,13 +17,14 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
-#include <string_view>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
+#include "absl/strings/string_view.h"
 #include "xla/backends/cpu/runtime/buffer_allocations.h"
+#include "xla/backends/cpu/runtime/function_library.h"
 #include "xla/backends/cpu/runtime/kernel_c_api.h"
 #include "xla/backends/cpu/runtime/thunk.h"
 #include "xla/service/buffer_assignment.h"
@@ -37,10 +38,11 @@ limitations under the License.
 namespace xla::cpu {
 namespace {
 
-class AddF32HostKernel : public Thunk::FunctionRegistry {
+class AddF32HostKernel : public FunctionLibrary {
  public:
-  absl::StatusOr<Kernel> FindKernel(std::string_view name) override {
-    return +[](const XLA_CPU_KernelCallFrame* call_frame) {
+  absl::StatusOr<void*> ResolveFunction(TypeId type_id,
+                                        absl::string_view name) final {
+    auto kernel = +[](const XLA_CPU_KernelCallFrame* call_frame) {
       const XLA_CPU_KernelArg& in = call_frame->args[0];
       const XLA_CPU_KernelArg& out = call_frame->args[1];
 
@@ -52,6 +54,7 @@ class AddF32HostKernel : public Thunk::FunctionRegistry {
 
       return static_cast<XLA_CPU_KernelError*>(nullptr);
     };
+    return reinterpret_cast<void*>(kernel);
   }
 };
 

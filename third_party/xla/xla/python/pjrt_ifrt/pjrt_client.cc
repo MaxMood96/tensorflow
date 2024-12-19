@@ -22,7 +22,6 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -81,6 +80,7 @@ limitations under the License.
 #include "xla/status_macros.h"
 #include "xla/tsl/concurrency/ref_count.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/casts.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
@@ -465,7 +465,7 @@ MakePjRtDevicesFromGlobalTopology(PjRtClient* client,
     int64_t slice_index = -1;
     if (!node.boot_id().empty()) {
       // Every new boot_id seen is treated as a new host/slice.
-      std::string_view boot_id = node.boot_id();
+      absl::string_view boot_id = node.boot_id();
       auto [it, inserted] =
           boot_id_to_slice_index.try_emplace(boot_id, next_slice_index);
       slice_index = it->second;

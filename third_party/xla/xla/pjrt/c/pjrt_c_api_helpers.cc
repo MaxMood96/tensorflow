@@ -21,7 +21,6 @@ limitations under the License.
 #include <functional>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -72,6 +71,20 @@ PJRT_ClientDeleter MakeClientDeleter(const PJRT_Api* api) {
     PJRT_Error* error = api->PJRT_Client_Destroy(&destroy_args);
     // TODO(b/236710439): handle the error and remove this CHECK() call
     CHECK(error == nullptr);
+  };
+}
+
+PJRT_AsyncHostToDeviceTransferManagerDeleter
+MakeAsyncHostToDeviceTransferManagerDeleter(const PJRT_Api* api) {
+  return [api](
+             PJRT_AsyncHostToDeviceTransferManager* transfer_manager) -> void {
+    PJRT_AsyncHostToDeviceTransferManager_Destroy_Args destroy_args;
+    destroy_args.struct_size =
+        PJRT_AsyncHostToDeviceTransferManager_Destroy_Args_STRUCT_SIZE;
+    destroy_args.extension_start = nullptr;
+    destroy_args.transfer_manager = transfer_manager;
+    pjrt::LogFatalIfPjrtError(
+        api->PJRT_AsyncHostToDeviceTransferManager_Destroy(&destroy_args), api);
   };
 }
 
@@ -634,18 +647,14 @@ static PJRT_NamedValue StableHloVersion(absl::string_view name,
 }
 
 const std::vector<PJRT_NamedValue>& GetXlaPluginCAttributes() {
-  static const std::vector<PJRT_NamedValue>* c_values = new std::vector<
-      PJRT_NamedValue>({
-      XlaVersion("xla_version"),
-      // TODO: (b/375454646) Uncomment once frameworks have bugfix:
-      // https://github.com/openxla/xla/commit/2f99455cdf99e844ddad17de9f4714997023d243
-      // StableHloVersion<0>("stablehlo_current_version",
-      //                    mlir::vhlo::Version::getCurrentVersion()),
-      StableHloVersion<0>("stablehlo_current_version",
-                          mlir::vhlo::Version(1, 7, 0)),
-      StableHloVersion<1>("stablehlo_minimum_version",
-                          mlir::vhlo::Version::getMinimumVersion()),
-  });
+  static const std::vector<PJRT_NamedValue>* c_values =
+      new std::vector<PJRT_NamedValue>({
+          XlaVersion("xla_version"),
+          StableHloVersion<0>("stablehlo_current_version",
+                              mlir::vhlo::Version::getCurrentVersion()),
+          StableHloVersion<1>("stablehlo_minimum_version",
+                              mlir::vhlo::Version::getMinimumVersion()),
+      });
   return *c_values;
 }
 
@@ -770,7 +779,7 @@ static PJRT_KeyValueGetCFunc ToKVGetCFunc(
     xla::KeyValueStoreInterface* kv_store) {
   return [kv_store](PJRT_KeyValueGetCallback_Args* args) -> PJRT_Error* {
     absl::StatusOr<std::string> output =
-        kv_store->Get(std::string_view(args->key, args->key_size),
+        kv_store->Get(absl::string_view(args->key, args->key_size),
                       absl::Milliseconds(args->timeout_in_ms));
     if (!output.ok()) {
       absl::string_view message = output.status().message();
@@ -790,8 +799,8 @@ static PJRT_KeyValuePutCFunc ToKVPutCFunc(
     xla::KeyValueStoreInterface* kv_store) {
   return [kv_store](PJRT_KeyValuePutCallback_Args* args) -> PJRT_Error* {
     absl::Status status =
-        kv_store->Set(std::string_view(args->key, args->key_size),
-                      std::string_view(args->value, args->value_size));
+        kv_store->Set(absl::string_view(args->key, args->key_size),
+                      absl::string_view(args->value, args->value_size));
     if (!status.ok()) {
       absl::string_view message = status.message();
       return (*args->callback_error)(StatusCodeToPjrtErrorCode(status.code()),
@@ -1067,6 +1076,29 @@ PJRT_Profiler_Extension CreatePjrtProfilerExtension(
       /*traceme_context_id=*/traceme_context_id,
   };
   return profiler_extension;
+}
+
+PJRT_ShapeSpec ConvertToPjRtShapeSpec(
+    const xla::PjRtClient::ShapeSpec& shape_spec) {
+  PJRT_ShapeSpec c_shape_spec;
+  c_shape_spec.struct_size = PJRT_ShapeSpec_STRUCT_SIZE;
+  c_shape_spec.extension_start = nullptr;
+  c_shape_spec.element_type =
+      pjrt::ConvertToPjRtBufferType(shape_spec.element_type);
+  c_shape_spec.dims = shape_spec.dims.data();
+  c_shape_spec.num_dims = shape_spec.dims.size();
+  return c_shape_spec;
+}
+
+xla::PjRtClient::ShapeSpec ConvertFromPjrtShapeSpec(
+    PJRT_ShapeSpec c_shape_spec) {
+  xla::PjRtClient::ShapeSpec shape_spec;
+  shape_spec.element_type =
+      pjrt::ConvertFromPjRtBufferType(c_shape_spec.element_type);
+
+  shape_spec.dims = xla::DimensionVector(
+      c_shape_spec.dims, c_shape_spec.dims + c_shape_spec.num_dims);
+  return shape_spec;
 }
 
 }  // namespace pjrt
