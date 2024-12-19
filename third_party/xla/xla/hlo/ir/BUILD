@@ -65,6 +65,7 @@ cc_library(
         "//xla:array",
         "//xla:comparison_util",
         "//xla:literal",
+        "//xla:literal_pool",
         "//xla:literal_util",
         "//xla:printer",
         "//xla:protobuf_util",
@@ -77,7 +78,6 @@ cc_library(
         "//xla:util",
         "//xla:window_util",
         "//xla:xla_data_proto_cc",
-        "//xla:xla_proto_cc",
         "//xla/hlo/parser:hlo_lexer",
         "//xla/service:compilation_environments",
         "//xla/service:computation_layout",
@@ -161,6 +161,7 @@ xla_cc_test(
     deps = [
         ":hlo",
         "//xla:shape_util",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/parser:hlo_parser",
         "//xla/service:hlo_module_config",
         "@com_google_absl//absl/hash",

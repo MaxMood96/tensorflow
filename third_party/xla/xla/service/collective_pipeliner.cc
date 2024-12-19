@@ -93,7 +93,12 @@ absl::Status UpdateControlDependencies(HloInstruction* original,
     if (it == cloned_map.end()) {
       continue;
     }
-    TF_RETURN_IF_ERROR(it->second->AddControlDependencyTo(new_instr));
+    // Only update add control dependencies between ops outside of the loop or
+    // within the loop body. If the control dependency crosses the loop boundary
+    // it is enforced by the loop structure.
+    if (it->second->parent() == new_instr->parent()) {
+      TF_RETURN_IF_ERROR(it->second->AddControlDependencyTo(new_instr));
+    }
   }
   return absl::OkStatus();
 }
@@ -143,7 +148,7 @@ std::optional<int> GetSlicedDimension(
 
 bool CheckIndexIsMonotonic(
     const HloInstruction* index,
-    const absl::flat_hash_map<const HloInstruction*, Range>& induction_map) {
+    absl::flat_hash_map<const HloInstruction*, Range>& induction_map) {
   // Because the only math operations supported by RecursivelyIdentifyRange()
   // are only sub/add then checking that we can compute the range here is enough
   // to guarantee that the index is monotonic if the base index is monotonic. If
@@ -151,7 +156,7 @@ bool CheckIndexIsMonotonic(
   // sophisticated check for monotonicity.
   Range range = RecursivelyIdentifyRange(index, induction_map);
   VLOG(6) << "Range for: " << index->ToString() << " " << range.ToString();
-  return !range.IsEmpty() && range.IsLinear();
+  return !range.IsEmpty() && range.IsBounded() && range.IsLinear();
 }
 
 // Check that the parameter is only used in a pattern param -> gte ->
@@ -784,8 +789,7 @@ class WhileLoopAnalysis {
       CollectivePipeliner::PipeliningDirection direction,
       int64_t level_to_operate_on,
       const absl::flat_hash_map<int64_t, int64_t>& parameter_gtes_count,
-      const absl::flat_hash_map<const HloInstruction*, Range>& index_ranges)
-      const;
+      absl::flat_hash_map<const HloInstruction*, Range>& index_ranges) const;
 
   // Merges the new collective (instr) with the existing one stored in
   // move_infos_[indices_to_merge[0]]. indices_to_merge.size() should be 1.
@@ -976,8 +980,7 @@ WhileLoopAnalysis::IsSupportedDynamicUpdateSlice(
     CollectivePipeliner::PipeliningDirection direction,
     int64_t level_to_operate_on,
     const absl::flat_hash_map<int64_t, int64_t>& parameter_gtes_count,
-    const absl::flat_hash_map<const HloInstruction*, Range>& index_ranges)
-    const {
+    absl::flat_hash_map<const HloInstruction*, Range>& index_ranges) const {
   HloComputation* while_body = while_->while_body();
   const HloInstruction* loop_parameter =
       while_body->parameter_instructions()[0];

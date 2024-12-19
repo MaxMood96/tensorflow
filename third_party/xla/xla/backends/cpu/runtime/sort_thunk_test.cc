@@ -22,11 +22,11 @@ limitations under the License.
 #include <functional>
 #include <numeric>
 #include <random>
-#include <string_view>
 #include <vector>
 
 #include "absl/status/statusor.h"
 #include "xla/backends/cpu/runtime/buffer_allocations.h"
+#include "xla/backends/cpu/runtime/function_library.h"
 #include "xla/backends/cpu/runtime/thunk.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
@@ -52,16 +52,17 @@ static bool LessThan(const void** data) {
   return *lhs < *rhs;
 }
 
-class LessThanComparator : public Thunk::FunctionRegistry {
+class LessThanComparator : public FunctionLibrary {
  public:
   static void LessThanWrapper(bool* result, const void*, const void** data,
                               const void*, const void*, const void*) {
     *result = LessThan(data);
   }
 
-  absl::StatusOr<Comparator> FindComparator(std::string_view name) final {
+  absl::StatusOr<void*> ResolveFunction(TypeId type_id,
+                                        absl::string_view name) final {
     DCHECK_EQ(name, "less_than");
-    return LessThanWrapper;
+    return reinterpret_cast<void*>(LessThanWrapper);
   }
 };
 
@@ -262,7 +263,7 @@ TEST_P(SortThunkTest, Sort2D) {
   params.buffer_allocations = &allocations;
 
   LessThanComparator less_than_comparator;
-  params.function_registry = &less_than_comparator;
+  params.function_library = &less_than_comparator;
 
   auto execute_event0 = sort_dim0->Execute(params);
   tsl::BlockUntilReady(execute_event0);
@@ -334,7 +335,7 @@ TEST_P(SortThunkTest, Sort2DWithLayout) {
   params.buffer_allocations = &allocations;
 
   LessThanComparator less_than_comparator;
-  params.function_registry = &less_than_comparator;
+  params.function_library = &less_than_comparator;
 
   auto execute_event0 = sort_dim0->Execute(params);
   tsl::BlockUntilReady(execute_event0);

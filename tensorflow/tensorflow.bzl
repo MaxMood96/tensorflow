@@ -618,9 +618,10 @@ def tf_gen_op_libs(
         )
 
 def _make_search_paths(prefix, levels_to_root):
+    suffix = "/python" if use_pywrap_rules() else ""
     return ",".join(
         [
-            "-rpath,%s/%s" % (prefix, "/".join([".."] * search_level))
+            "-rpath,%s/%s%s" % (prefix, "/".join([".."] * search_level), suffix)
             for search_level in range(levels_to_root + 1)
         ],
     )
@@ -2214,7 +2215,6 @@ def tf_custom_op_library_additional_deps_impl():
     return [
         # copybara:comment_begin
         "@com_google_protobuf//:protobuf",
-        "@nsync//:nsync_cpp",
         # copybara:comment_end
 
         # for //third_party/eigen3
@@ -2622,20 +2622,17 @@ def py_test(
         exec_properties = None,
         test_rule = _plain_py_test,
         env = {},
+        extra_pywrap_deps = [clean_dep("//tensorflow/python:_pywrap_tensorflow")],
         **kwargs):
     if not exec_properties:
         exec_properties = tf_exec_properties(kwargs)
 
     if use_pywrap_rules():
-        test_env = {
-            "PYWRAP_TARGET": clean_dep(Label("//tensorflow/python:_pywrap_tensorflow")),
-        }
-        test_env.update(env)
         actual_deps = deps.to_list() if hasattr(deps, "to_list") else deps
         test_rule(
-            deps = actual_deps + [test_env["PYWRAP_TARGET"]],
+            deps = actual_deps + extra_pywrap_deps,
             exec_properties = exec_properties,
-            env = test_env,
+            env = env,
             data = data,
             **kwargs
         )
@@ -3328,7 +3325,19 @@ def pybind_extension_opensource(
     )
 
 # Export open source version of pybind_extension under base name as well.
-pybind_extension = _pybind_extension if use_pywrap_rules() else pybind_extension_opensource
+def pybind_extension(name, common_lib_packages = [], **kwargs):
+    if use_pywrap_rules():
+        _pybind_extension(
+            name = name,
+            common_lib_packages = common_lib_packages + ["tensorflow/python"],
+            **kwargs
+        )
+    else:
+        pybind_extension_opensource(
+            name = name,
+            **kwargs
+        )
+
 stripped_cc_info = _stripped_cc_info
 
 # Note: we cannot add //third_party/tf_runtime:__subpackages__ here,
@@ -3399,7 +3408,6 @@ def tf_python_pybind_static_deps(testonly = False):
         "@local_config_tensorrt//:__subpackages__",
         "@local_execution_config_platform//:__subpackages__",
         "@mkl_dnn_acl_compatible//:__subpackages__",
-        "@nsync//:__subpackages__",
         "@nccl_archive//:__subpackages__",
         "@onednn//:__subpackages__",
         "@org_sqlite//:__subpackages__",
@@ -3444,7 +3452,8 @@ def tf_python_pybind_extension_opensource(
         testonly = False,
         visibility = None,
         win_def_file = None,
-        additional_exported_symbols = None):
+        additional_exported_symbols = None,
+        linkopts = []):
     """A wrapper macro for pybind_extension_opensource that is used in tensorflow/python/BUILD.
 
     Please do not use it anywhere else as it may behave unexpectedly. b/146445820
@@ -3473,10 +3482,11 @@ def tf_python_pybind_extension_opensource(
         testonly = testonly,
         visibility = visibility,
         win_def_file = win_def_file,
+        linkopts = linkopts,
     )
 
 # Export open source version of tf_python_pybind_extension under base name as well.
-tf_python_pybind_extension = _pybind_extension if use_pywrap_rules() else tf_python_pybind_extension_opensource
+tf_python_pybind_extension = pybind_extension if use_pywrap_rules() else tf_python_pybind_extension_opensource
 
 def tf_pybind_cc_library_wrapper_opensource(name, deps, visibility = None, **kwargs):
     """Wrapper for cc_library and proto dependencies used by tf_python_pybind_extension_opensource.

@@ -51,6 +51,16 @@ const char* LiteRtGetCompilerPluginSocManufacturer() {
   return kPluginManufacturer;
 }
 
+LiteRtStatus LiteRtGetCompilerPluginSupportedHardware(
+    LiteRtCompilerPlugin compiler_plugin,
+    LiteRtHwAccelerators* supported_hardware) {
+  if (!compiler_plugin || !supported_hardware) {
+    return kLiteRtStatusErrorInvalidArgument;
+  }
+  *supported_hardware = kLiteRtHwAccelatorCpu;
+  return kLiteRtStatusOk;
+}
+
 LiteRtStatus LiteRtGetNumCompilerPluginSupportedSocModels(
     LiteRtCompilerPlugin compiler_plugin,
     LiteRtParamIndex* num_supported_soc_models) {
@@ -129,16 +139,11 @@ void LiteRtDestroyCompilerPlugin(LiteRtCompilerPlugin compiler_plugin) {
   delete compiler_plugin;
 }
 
-LiteRtStatus LiteRtCompilerPluginPartitionModel(
-    LiteRtCompilerPlugin compiler_plugin, LiteRtModel model,
-    LiteRtOpList selected_ops) {
-  auto main_subgraph =
-      litert::Model::CreateFromNonOwnedHandle(model).MainSubgraph();
-  if (!main_subgraph) {
-    return main_subgraph.Error().Status();
-  }
-
-  for (const auto& op : main_subgraph->Ops()) {
+LiteRtStatus LiteRtCompilerPluginPartition(LiteRtCompilerPlugin compiler_plugin,
+                                           LiteRtSubgraph subgraph,
+                                           LiteRtOpList selected_ops) {
+  ::litert::Subgraph main_subgraph(subgraph);
+  for (const auto& op : main_subgraph.Ops()) {
     if (op.Code() != kLiteRtOpCodeTflMul) {
       continue;
     }
@@ -184,7 +189,7 @@ LiteRtStatus CompileSinglePartition(LiteRtParamIndex partition_index,
 
 LiteRtStatus LiteRtCompilerPluginCompile(
     LiteRtCompilerPlugin compiler_plugin, const char* soc_model,
-    LiteRtSubgraphArray partitions, LiteRtParamIndex num_partitions,
+    LiteRtSubgraph* partitions, LiteRtParamIndex num_partitions,
     LiteRtCompiledResult* compiled_result) {
   LiteRtCompiledResult result = new LiteRtCompiledResultT;
 

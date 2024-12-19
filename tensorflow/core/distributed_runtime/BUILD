@@ -109,6 +109,7 @@ cc_library(
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
+        "@local_tsl//tsl/platform:stacktrace",
     ],
 )
 
@@ -172,6 +173,7 @@ cc_library(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/activity_watcher",
         "//tensorflow/core/protobuf:worker_proto_cc",
+        "@com_google_absl//absl/log",
         "@local_xla//xla/tsl/distributed_runtime/coordination:coordination_service",
         "@local_xla//xla/tsl/distributed_runtime/coordination:coordination_service_agent",
         "@local_xla//xla/tsl/distributed_runtime/coordination:coordination_service_rpc_handler",

@@ -21,7 +21,6 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "absl/base/thread_annotations.h"
@@ -40,8 +39,8 @@ limitations under the License.
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
-#include "xla/backends/cpu/codegen/function_library.h"
 #include "xla/backends/cpu/codegen/ir_compiler.h"
+#include "xla/backends/cpu/runtime/function_library.h"
 #include "tsl/platform/cpu_info.h"
 
 namespace xla::cpu {
@@ -112,9 +111,8 @@ class JitCompiler {
 
   // Creates a new instance of the JitCompiler.
   static absl::StatusOr<JitCompiler> Create(llvm::TargetOptions target_options,
-                                            llvm::CodeGenOptLevel opt_level,
                                             Options options,
-                                            TaskRunner task_runner);
+                                            TaskRunner task_runner = nullptr);
 
   // Adds a LLVM module to the dynamic library at `dylib_index`.
   absl::Status AddModule(llvm::orc::ThreadSafeModule module,
@@ -145,12 +143,6 @@ class JitCompiler {
   llvm::TargetMachine* target_machine() { return target_machine_.get(); }
 
  private:
-  JitCompiler(IrCompiler::TargetMachineBuilder target_machine_builder,
-              std::shared_ptr<llvm::TargetMachine> target_machine,
-              std::unique_ptr<llvm::orc::ExecutionSession> execution_session,
-              std::unique_ptr<IrCompiler> ir_compiler, size_t num_dylibs,
-              DefinitionGenerator definition_generator);
-
   // LLVM ORC task dispatcher that uses `TaskRunner` to run compilation tasks.
   class TaskDispatcher : public llvm::orc::TaskDispatcher {
    public:
@@ -164,7 +156,6 @@ class JitCompiler {
     TaskRunner task_runner_;
 
     absl::Mutex mu_;
-    absl::CondVar cv_;
     size_t num_dispatched_tasks_ ABSL_GUARDED_BY(mu_) = 0;
   };
 
@@ -184,7 +175,7 @@ class JitCompiler {
     ~CompiledFunctionLibrary() final;
 
     absl::StatusOr<void*> ResolveFunction(TypeId type_id,
-                                          std::string_view name) final;
+                                          absl::string_view name) final;
 
    private:
     std::unique_ptr<llvm::orc::ExecutionSession> execution_session_;
@@ -192,10 +183,19 @@ class JitCompiler {
     absl::flat_hash_map<std::string, ResolvedSymbol> symbols_map_;
   };
 
+  JitCompiler(IrCompiler::TargetMachineBuilder target_machine_builder,
+              std::shared_ptr<llvm::TargetMachine> target_machine,
+              TaskDispatcher* task_dispatcher,
+              std::unique_ptr<llvm::orc::ExecutionSession> execution_session,
+              std::unique_ptr<IrCompiler> ir_compiler, size_t num_dylibs,
+              DefinitionGenerator definition_generator);
+
   // Target machine builder that is used to construct target machines for this
   // instance of `JitCompiler` (when compiling LLVM modules in parallel).
   IrCompiler::TargetMachineBuilder target_machine_builder_;
   std::shared_ptr<llvm::TargetMachine> target_machine_;
+
+  TaskDispatcher* task_dispatcher_;  // owned by `execution_session_`
 
   std::unique_ptr<llvm::orc::ExecutionSession> execution_session_;
   std::unique_ptr<llvm::orc::RTDyldObjectLinkingLayer> object_layer_;
