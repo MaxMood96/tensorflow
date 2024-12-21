@@ -52,6 +52,7 @@ limitations under the License.
 #include "xla/backends/cpu/runtime/thunk.h"
 #include "xla/backends/cpu/runtime/topk_thunk.h"
 #include "xla/backends/cpu/runtime/while_thunk.h"
+#include "xla/backends/cpu/runtime/xnnpack/xnn_dot_thunk.h"
 #include "xla/comparison_util.h"
 #include "xla/cpu_function_runtime.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
@@ -64,6 +65,7 @@ limitations under the License.
 #include "xla/layout_util.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/collective_ops_utils.h"
+#include "xla/service/cpu/backend_config.pb.h"
 #include "xla/service/cpu/dot_op_emitter.h"
 #include "xla/service/cpu/ir_emission_utils.h"
 #include "xla/service/cpu/ir_emitter2.h"
@@ -812,9 +814,23 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitDotThunk(
       TF_ASSIGN_OR_RETURN(BufferAllocation::Slice out_slice,
                           GetAllocationSlice(instruction));
 
-      return ThunkSequence::Of<DotThunk>(
-          ThunkInfo(instruction), dnums, lhs_slice, lhs->shape(), rhs_slice,
-          rhs->shape(), out_slice, instruction->shape());
+      // Decide whether to use XNNPACK or Eigen.
+      bool use_xnn = hlo_module_config_.debug_options().xla_cpu_use_xnnpack();
+      if (use_xnn) {
+        TF_ASSIGN_OR_RETURN(
+            use_xnn, XnnDotThunk::IsSupported(dnums, lhs->shape(), rhs->shape(),
+                                              instruction->shape()));
+      }
+
+      if (use_xnn) {
+        return ThunkSequence::Of<XnnDotThunk>(
+            ThunkInfo(instruction), dnums, lhs_slice, lhs->shape(), rhs_slice,
+            rhs->shape(), out_slice, instruction->shape());
+      } else {
+        return ThunkSequence::Of<DotThunk>(
+            ThunkInfo(instruction), dnums, lhs_slice, lhs->shape(), rhs_slice,
+            rhs->shape(), out_slice, instruction->shape());
+      }
     }
   }
 }
@@ -964,13 +980,24 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitCustomCallThunk(
   }
 
   // Get backend config and buffer assignments.
-  auto backend_config = custom_call->opaque();
+  auto backend_config = custom_call->backend_config<BackendConfig>();
+  if (!backend_config.ok()) {
+    VLOG(3) << "Unable to parse backend config for custom call: "
+            << backend_config.status().message() << "\n"
+            << "Fall back to parse the opaque str.";
+  }
+  auto& backend_config_str =
+      !backend_config.ok()
+          ? custom_call->opaque()
+          : ((version == API_VERSION_TYPED_FFI)
+                 ? backend_config->custom_call_config().attributes()
+                 : backend_config->custom_call_config().opaque());
   TF_ASSIGN_OR_RETURN(auto op_buffers,
                       GetCustomCallOpBuffers(instruction, buffer_assignment_));
 
   return ThunkSequence::Of<CustomCallThunk>(ThunkInfo(instruction),
                                             custom_call_target, op_buffers,
-                                            backend_config, version);
+                                            backend_config_str, version);
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitSliceToDynamicThunk(

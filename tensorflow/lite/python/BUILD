@@ -10,6 +10,7 @@ package(
         "//tensorflow:__subpackages__",
         "//tensorflow:internal",
         "//third_party/odml/model_customization/quantization:__subpackages__",
+        "//third_party/py/ai_edge_torch:__subpackages__",
         "//third_party/py/tensorflow_federated:__subpackages__",
         "//third_party/tflite_micro:__subpackages__",
     ],
@@ -21,6 +22,7 @@ exports_files(["tflite_convert.py"])
 flatbuffer_py_library(
     name = "schema_py",
     srcs = ["//tensorflow/compiler/mlir/lite/schema:schema.fbs"],
+    visibility = ["//visibility:public"],
 )
 
 flatbuffer_py_library(

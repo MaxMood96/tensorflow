@@ -173,6 +173,20 @@ xla_cc_test(
 tf_proto_library(
     name = "execute_options_proto",
     srcs = ["execute_options.proto"],
+    protodeps = [":attribute_map_proto"],
+)
+
+xla_cc_test(
+    name = "executable_test",
+    size = "small",
+    srcs = ["executable_test.cc"],
+    deps = [
+        ":attribute_map",
+        ":ifrt",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
+    ],
 )
 
 xla_cc_test(
@@ -606,6 +620,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
+        "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
     ],

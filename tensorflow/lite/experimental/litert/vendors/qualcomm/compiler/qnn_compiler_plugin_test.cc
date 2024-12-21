@@ -24,6 +24,7 @@
 #include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
 #include "tensorflow/lite/experimental/litert/core/model/model.h"
 #include "tensorflow/lite/experimental/litert/test/common.h"
+#include "tensorflow/lite/experimental/litert/test/test_macros.h"
 #include "tensorflow/lite/experimental/litert/test/test_models.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_compiler_plugin.h"
 #include "tensorflow/lite/experimental/litert/vendors/cc/litert_compiler_plugin.h"
@@ -57,16 +58,28 @@ const auto kSupportedOps =
                     "simple_select_v2_op.tflite",
                     "simple_fully_connected_op.tflite",
                     "fully_connected_3d.tflite",
+                    "simple_embedding_lookup_op.tflite",
+                    "simple_logical_and_op.tflite",
+                    "simple_less_op.tflite",
+                    "simple_greater_op.tflite",
+                    "simple_gelu_op.tflite",
                     kFeedForwardModel,
                     kKeyEinsumModel,
                     kQueryEinsumModel,
                     kValueEinsumModel,
                     kAttnVecEinsumModel,
                     kROPEModel,
+                    kLookUpROPEModel,
                     kRMSNormModel,
                     kSDPAModel,
                     kAttentionModel,
-                    kTransformerBlockModel
+                    kTransformerBlockModel,
+                    kQSimpleMul16x16Model,
+                    kQMulAdd16x16Model,
+                    kQQueryEinsum16x8Model,
+                    kQKeyEinsum16x8Model,
+                    kQVauleEinsum16x8Model,
+                    kQAttnVecEinsum16x8Model
                     );
 // clang-format on
 
@@ -78,7 +91,7 @@ TEST(TestQnnPlugin, GetConfigInfo) {
   LiteRtParamIndex num_supported_soc_models;
   LITERT_ASSERT_STATUS_OK(LiteRtGetNumCompilerPluginSupportedSocModels(
       plugin.get(), &num_supported_soc_models));
-  ASSERT_EQ(num_supported_soc_models, 4);
+  ASSERT_EQ(num_supported_soc_models, 5);
 
   const char* config_id;
   LITERT_CHECK_STATUS_OK(
@@ -91,12 +104,12 @@ TEST(TestQnnPlugin, PartitionMulOps) {
   auto model = testing::LoadTestFileModel("one_mul.tflite");
 
   LiteRtOpListT selected_op_list;
-  LITERT_ASSERT_STATUS_OK(LiteRtCompilerPluginPartitionModel(
-      plugin.get(), model.Get(), &selected_op_list));
+  LITERT_ASSERT_STATUS_OK(LiteRtCompilerPluginPartition(
+      plugin.get(), model.Subgraph(0)->Get(), &selected_op_list));
   const auto selected_ops = selected_op_list.Vec();
 
   ASSERT_EQ(selected_ops.size(), 1);
-  EXPECT_EQ(selected_ops[0]->op_code, kLiteRtOpCodeTflMul);
+  EXPECT_EQ(selected_ops[0]->OpCode(), kLiteRtOpCodeTflMul);
 }
 
 TEST(TestQnnPlugin, CompileMulSubgraph) {

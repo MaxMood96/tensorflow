@@ -17,7 +17,6 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -28,16 +27,17 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/base/attributes.h"
+#include "absl/base/call_once.h"
 #include "absl/base/optimization.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/memory/memory.h"
 #include "absl/numeric/bits.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
-#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "unsupported/Eigen/CXX11/Tensor"
 #include "xla/backends/cpu/runtime/buffer_allocations.h"
+#include "xla/backends/cpu/runtime/function_library.h"
 #include "xla/backends/cpu/runtime/kernel.h"
 #include "xla/backends/cpu/runtime/kernel_c_api.h"
 #include "xla/backends/cpu/runtime/thunk.h"
@@ -119,8 +119,7 @@ KernelThunk<num_arguments, num_results>::KernelThunk(
       kernel_name_(std::move(kernel_name)),
       thread_dim_(thread_dim),
       min_alignment_(min_alignment),
-      call_once_(thread_dim_ == se::ThreadDim()),
-      kernel_ptr_(nullptr) {
+      call_once_(thread_dim_ == se::ThreadDim()) {
   // Resize storage for arguments and results buffers if it is dynamic.
   if constexpr (IsDynamic(num_arguments)) {
     arguments_buffers_.resize(arguments_buffers.size());
@@ -206,20 +205,21 @@ KernelThunk<num_arguments, num_results>::ExecuteInternal(
 
   // TODO(ezhulenev): Kernel ptr should be loaded as a part of Thunk
   // initialization stage.
-  Kernel* kernel = kernel_ptr_.load(std::memory_order_acquire);
+  absl::call_once(kernel_init_flag_, [&]() {
+    // Because thunks are owned by a parent CpuExecutable, we can safely assume
+    // that kernel pointer will not change after we find it the first time.
+    absl::StatusOr<FunctionLibrary::Kernel*> kernel_fn =
+        params.function_library->ResolveFunction<FunctionLibrary::Kernel>(
+            kernel_name_);
 
-  // Because thunks are owned by a parent CpuExecutable, we can safely assume
-  // that kernel pointer will not change after we find it the first time.
-  if (ABSL_PREDICT_FALSE(kernel == nullptr)) {
-    TF_ASSIGN_OR_RETURN(XLA_CPU_Kernel * kernel_fn,
-                        params.function_registry->FindKernel(kernel_name_));
-
-    absl::MutexLock lock(&mutex_);
-    if ((kernel = kernel_ptr_.load(std::memory_order_relaxed)) == nullptr) {
-      kernel = &kernel_.emplace(num_kernel_args_, kernel_fn);
-      kernel_ptr_.store(kernel, std::memory_order_release);
+    if (ABSL_PREDICT_TRUE(kernel_fn.ok())) {
+      kernel_.emplace(num_kernel_args_, *kernel_fn);
+    } else {
+      kernel_ = std::move(kernel_fn.status());
     }
-  }
+  });
+  TF_RETURN_IF_ERROR(kernel_.status());
+  Kernel* kernel = &kernel_.value();
 
   // Use a fast path if kernel called just once.
   if (ABSL_PREDICT_TRUE(call_once_)) {

@@ -18,6 +18,7 @@ package(
         "//tensorflow/core/lib/jpeg:__pkg__",
         "//tensorflow/core/platform:__pkg__",
         "@local_tsl//tsl/platform:__pkg__",
+        "//xla/tsl/platform:__pkg__",
     ]),
     licenses = ["notice"],
 )
@@ -49,7 +50,10 @@ cc_library(
 cc_library(
     name = "criticality",
     hdrs = ["@local_tsl//tsl/platform:criticality.h"],
-    tags = ["manual"],
+    tags = [
+        "manual",
+        "nobuilder",
+    ],
     textual_hdrs = ["criticality.h"],
     deps = [
         "@local_tsl//tsl/platform",
@@ -111,13 +115,17 @@ cc_library(
     name = "env",
     srcs = [
         "posix_file_system.cc",
-        "@local_tsl//tsl/platform:env.cc",
-        "@local_tsl//tsl/platform:file_system.cc",
-        "@local_tsl//tsl/platform:file_system_helper.cc",
-        "@local_tsl//tsl/platform:threadpool.cc",
+        "//xla/tsl/platform:env.cc",
+        "//xla/tsl/platform:file_system.cc",
+        "//xla/tsl/platform:file_system_helper.cc",
+        "//xla/tsl/platform:threadpool.cc",
     ],
     hdrs = [
         "posix_file_system.h",
+        "//xla/tsl/platform:env.h",
+        "//xla/tsl/platform:file_system.h",
+        "//xla/tsl/platform:file_system_helper.h",
+        "//xla/tsl/platform:threadpool.h",
         "@local_tsl//tsl/platform:env.h",
         "@local_tsl//tsl/platform:file_system.h",
         "@local_tsl//tsl/platform:file_system_helper.h",
@@ -131,9 +139,12 @@ cc_library(
         "nobuilder",
     ],
     deps = [
+        "//xla/tsl/platform:logging",
         "//xla/tsl/protobuf:error_codes_proto_impl_cc",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:optional",
         "@eigen_archive//:eigen3",
@@ -190,7 +201,7 @@ cc_library(
 cc_library(
     name = "env_time",
     srcs = ["env_time.cc"],
-    hdrs = ["@local_tsl//tsl/platform:env_time.h"],
+    hdrs = ["//xla/tsl/platform:env_time.h"],
     tags = [
         "manual",
         "no_oss",
@@ -290,27 +301,6 @@ filegroup(
     srcs = [
         "integral_types.h",
     ] + if_not_windows(["env_time.cc"]),
-)
-
-cc_library(
-    name = "mutex",
-    srcs = [
-        "mutex.cc",
-        "mutex_data.h",
-        "@local_tsl//tsl/platform:mutex.h",
-    ],
-    tags = [
-        "manual",
-        "no_oss",
-        "nobuilder",
-    ],
-    textual_hdrs = ["mutex.h"],
-    deps = [
-        "@local_tsl//tsl/platform",
-        "@local_tsl//tsl/platform:macros",
-        "@local_tsl//tsl/platform:thread_annotations",
-        "@nsync//:nsync_cpp",
-    ],
 )
 
 cc_library(
@@ -435,7 +425,7 @@ cc_library(
 cc_library(
     name = "subprocess",
     srcs = ["subprocess.cc"],
-    hdrs = ["@local_tsl//tsl/platform:subprocess.h"],
+    hdrs = ["//xla/tsl/platform:subprocess.h"],
     tags = [
         "manual",
         "no_oss",
@@ -499,10 +489,10 @@ cc_library(
         "nobuilder",
     ],
     deps = [
-        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/synchronization",
         "@local_tsl//tsl/platform:env",
-        "@local_tsl//tsl/platform:mutex",
-        "@local_tsl//tsl/platform:notification",
         "@local_tsl//tsl/platform:platform_port",
     ],
 )
@@ -612,8 +602,6 @@ filegroup(
     srcs = [
         "casts.h",
         "error_logging.cc",
-        "mutex.h",
-        "mutex_data.h",
         "unbounded_work_queue.cc",
         "unbounded_work_queue.h",
     ] + if_not_fuchsia([

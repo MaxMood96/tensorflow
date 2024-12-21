@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
-#include <string_view>
 #include <vector>
 
 #include "absl/memory/memory.h"
@@ -82,7 +81,7 @@ class IrEmitter2Test : public HloTestBase {
   // underlying FindInstruction function static first.
   absl::StatusOr<IrEmitter2::KernelInfo> EmitElementalHostKernel(
       IrEmitter2& ir_emitter, HloModule& hlo,
-      std::string_view instruction_name) {
+      absl::string_view instruction_name) {
     HloInstruction* instruction = FindInstruction(&hlo, instruction_name);
 
     if (instruction == nullptr) {
@@ -144,40 +143,40 @@ TEST_F(IrEmitter2Test, BuildKernelPrototype) {
                             absl::StrCat(R"(
     CHECK: define ptr @test(ptr %0) #0 {
 
-    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 0
-    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThreadDim, {{.*}} i32 0
-    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThreadDim, {{.*}} i32 1
-    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThreadDim, {{.*}} i32 2
+    CHECK-NEXT: getelementptr inbounds nuw %XLA_CPU_KernelCallFrame, {{.*}} i32 0
+    CHECK:      getelementptr inbounds nuw %XLA_CPU_KernelThreadDim, {{.*}} i32 0
+    CHECK:      getelementptr inbounds nuw %XLA_CPU_KernelThreadDim, {{.*}} i32 1
+    CHECK:      getelementptr inbounds nuw %XLA_CPU_KernelThreadDim, {{.*}} i32 2
     CHECK:      load i64
     CHECK:      load i64
     CHECK:      load i64
 
-    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 1
-    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThread, {{.*}} i32 0
-    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThread, {{.*}} i32 1
-    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThread, {{.*}} i32 2
+    CHECK-NEXT: getelementptr inbounds nuw %XLA_CPU_KernelCallFrame, {{.*}} i32 1
+    CHECK:      getelementptr inbounds nuw %XLA_CPU_KernelThread, {{.*}} i32 0
+    CHECK:      getelementptr inbounds nuw %XLA_CPU_KernelThread, {{.*}} i32 1
+    CHECK:      getelementptr inbounds nuw %XLA_CPU_KernelThread, {{.*}} i32 2
     CHECK:      load i64
     CHECK:      load i64
     CHECK:      load i64
 
-    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %XLA_CPU_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
-    CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 0, i32 0
+    CHECK:      getelementptr %XLA_CPU_KernelArg, {{.*}} i32 0, i32 0
     CHECK:      %[[ARG0:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0:.+]], !dereferenceable ![[DEREF_BYTES:.+]], !align ![[ALIGNMENT:.+]]
 
-    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %XLA_CPU_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
-    CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 1, i32 0
+    CHECK:      getelementptr %XLA_CPU_KernelArg, {{.*}} i32 1, i32 0
     CHECK:      %[[ARG1:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0]], !dereferenceable ![[DEREF_BYTES]], !align ![[ALIGNMENT]]
 
-    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %XLA_CPU_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
-    CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 2, i32 0
+    CHECK:      getelementptr %XLA_CPU_KernelArg, {{.*}} i32 2, i32 0
     CHECK:      %[[ARG2:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0]], !dereferenceable ![[DEREF_BYTES]], !align ![[ALIGNMENT]]
 
-    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %XLA_CPU_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
-    CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 3, i32 0
+    CHECK:      getelementptr %XLA_CPU_KernelArg, {{.*}} i32 3, i32 0
     CHECK:      %[[ARG3:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0]], !dereferenceable ![[DEREF_BYTES]], !align ![[ALIGNMENT]]
 
     CHECK-NEXT: %[[PTR0:.+]] = getelementptr inbounds float, ptr %[[ARG0]]

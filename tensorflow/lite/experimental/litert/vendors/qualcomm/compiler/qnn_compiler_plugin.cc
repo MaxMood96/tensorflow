@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "third_party/qairt/latest/include/QNN/HTP/QnnHtpDevice.h"
@@ -28,7 +29,6 @@
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_model.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_model_predicates.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_compiler_plugin.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/qnn_compose_graph.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/qnn_manager.h"
@@ -43,13 +43,15 @@ namespace {
 
 constexpr char kPluginManufacturer[] = "Qualcomm";
 
+// clang-format off
 constexpr std::pair<const char*, QnnHtpDevice_Arch_t> kPluginSocModels[] = {
     {"V68", QNN_HTP_DEVICE_ARCH_V68},
     {"V69", QNN_HTP_DEVICE_ARCH_V69},
     {"V73", QNN_HTP_DEVICE_ARCH_V73},
     {"V75", QNN_HTP_DEVICE_ARCH_V75},
+    {"V79", QNN_HTP_DEVICE_ARCH_V79},
 };
-// clang-format off
+
 constexpr LiteRtOpCode kSupportedOps[] = {
   kLiteRtOpCodeTflAdd,
   kLiteRtOpCodeTflDiv,
@@ -70,6 +72,11 @@ constexpr LiteRtOpCode kSupportedOps[] = {
   kLiteRtOpCodeTflSin,
   kLiteRtOpCodeTflCos,
   kLiteRtOpCodeTflFullyConnected,
+  kLiteRtOpCodeTflEmbeddingLookup,
+  kLiteRtOpCodeTflLogicalAnd,
+  kLiteRtOpCodeTflLess,
+  kLiteRtOpCodeTflGreater,
+  kLiteRtOpCodeTflGelu,
 };
 // clang-format on
 
@@ -102,6 +109,16 @@ LiteRtStatus LiteRtGetCompilerPluginVersion(LiteRtApiVersion* api_version) {
 
 const char* LiteRtGetCompilerPluginSocManufacturer() {
   return kPluginManufacturer;
+}
+
+LiteRtStatus LiteRtGetCompilerPluginSupportedHardware(
+    LiteRtCompilerPlugin compiler_plugin,
+    LiteRtHwAccelerators* supported_hardware) {
+  if (!compiler_plugin || !supported_hardware) {
+    return kLiteRtStatusErrorInvalidArgument;
+  }
+  *supported_hardware = kLiteRtHwAccelatorNpu;
+  return kLiteRtStatusOk;
 }
 
 LiteRtStatus LiteRtGetNumCompilerPluginSupportedSocModels(
@@ -138,6 +155,9 @@ struct LiteRtCompiledResultT {
 LiteRtStatus LiteRtGetCompiledResultByteCode(
     LiteRtCompiledResult compiled_result, const void** byte_code,
     size_t* byte_code_size) {
+  if (!compiled_result || !byte_code || !byte_code_size) {
+    return kLiteRtStatusErrorInvalidArgument;
+  }
   *byte_code = compiled_result->context_bin.data();
   *byte_code_size = compiled_result->context_bin.size();
   return kLiteRtStatusOk;
@@ -146,7 +166,9 @@ LiteRtStatus LiteRtGetCompiledResultByteCode(
 LiteRtStatus LiteRtGetCompiledResultCallInfo(
     LiteRtCompiledResult compiled_result, LiteRtParamIndex call_idx,
     const void** call_info, size_t* call_info_size) {
-  if (call_idx >= compiled_result->graph_names.size()) {
+  if (!compiled_result || !call_info || !call_info_size) {
+    return kLiteRtStatusErrorInvalidArgument;
+  } else if (call_idx >= compiled_result->graph_names.size()) {
     return kLiteRtStatusErrorIndexOOB;
   }
 
@@ -158,6 +180,9 @@ LiteRtStatus LiteRtGetCompiledResultCallInfo(
 
 LiteRtStatus LiteRtGetNumCompiledResultCalls(
     LiteRtCompiledResult compiled_result, LiteRtParamIndex* num_calls) {
+  if (!compiled_result || !num_calls) {
+    return kLiteRtStatusErrorInvalidArgument;
+  }
   *num_calls = compiled_result->graph_names.size();
   return kLiteRtStatusOk;
 }
@@ -202,16 +227,11 @@ bool IsOpSupported(const litert::Op& op) {
 
 }  // namespace
 
-LiteRtStatus LiteRtCompilerPluginPartitionModel(
-    LiteRtCompilerPlugin compiler_plugin, LiteRtModel model,
-    LiteRtOpList selected_ops) {
-  auto m = litert::Model::CreateFromNonOwnedHandle(model);
-  auto subgraph = m.MainSubgraph();
-  if (!subgraph) {
-    return subgraph.Error().Status();
-  }
-
-  for (const auto& op : subgraph->Ops()) {
+LiteRtStatus LiteRtCompilerPluginPartition(LiteRtCompilerPlugin compiler_plugin,
+                                           LiteRtSubgraph subgraph,
+                                           LiteRtOpList selected_ops) {
+  ::litert::Subgraph graph(subgraph);
+  for (const auto& op : graph.Ops()) {
     if (!IsOpSupported(op)) {
       continue;
     }
@@ -224,13 +244,18 @@ LiteRtStatus LiteRtCompilerPluginPartitionModel(
 
 LiteRtStatus LiteRtCompilerPluginCompile(
     LiteRtCompilerPlugin compiler_plugin, const char* soc_model,
-    LiteRtSubgraphArray partitions, LiteRtParamIndex num_partitions,
+    LiteRtSubgraph* partitions, LiteRtParamIndex num_partitions,
     LiteRtCompiledResult* compiled_result) {
-  LITERT_LOG(LITERT_INFO, "Starting QNN Compilation for %d subgraphs",
-             num_partitions);
-  auto opt_soc_model = FindSocModel(soc_model);
-  if (opt_soc_model.has_value()) {
-    LITERT_LOG(LITERT_INFO, "For arch: %d", opt_soc_model.value());
+  LITERT_LOG(LITERT_INFO,
+             "Starting QNN Compilation for %d subgraphs, soc_model=%s",
+             num_partitions, soc_model);
+
+  auto opt_soc_model = soc_model ? FindSocModel(soc_model) : std::nullopt;
+  if (opt_soc_model) {
+    LITERT_LOG(LITERT_ERROR, "Compiling QNN architecture: %d", *opt_soc_model);
+  } else if (soc_model) {
+    LITERT_LOG(LITERT_ERROR, "Unexpected SoC model: %s", soc_model);
+    return kLiteRtStatusErrorInvalidArgument;
   }
 
   // Initialize SDK and load qnn shared libraries.

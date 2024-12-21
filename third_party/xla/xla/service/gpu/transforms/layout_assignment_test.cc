@@ -26,6 +26,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/filecheck.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/service/computation_layout.h"
@@ -51,7 +52,7 @@ using ::tsl::testing::IsOkAndHolds;
 
 class LayoutAssignmentTest : public HloTestBase {
  public:
-  se::DeviceDescription GetDeviceDescription() {
+  const se::DeviceDescription& GetDeviceDescription() {
     return backend().default_stream_executor()->GetDeviceDescription();
   }
 
@@ -59,7 +60,7 @@ class LayoutAssignmentTest : public HloTestBase {
     return GetDeviceDescription().cuda_compute_capability();
   }
 
-  se::GpuComputeCapability GetGpuComputeCapability() {
+  const se::GpuComputeCapability& GetGpuComputeCapability() {
     return GetDeviceDescription().gpu_compute_capability();
   }
 
@@ -533,6 +534,76 @@ ENTRY entry {
       << ". Output: " << output_layout;
 }
 
+TEST_F(LayoutAssignmentTest, CuDNNConvolutionHasNHWCLayoutPostHopper) {
+  const char* hlo = R"(
+ENTRY entry {
+  p0 = f32[1,64,64,16]{3,2,1,0} parameter(0)
+  p1 = f32[3,16,3,32]{3,2,1,0} parameter(1)
+  ROOT conv = (f32[1,64,64,32]{3,2,1,0}, u8[0]{0}) custom-call(p0, p1),
+    window={size=3x3 pad=1_1x1_1}, dim_labels=b10f_o10i->b10f,
+    custom_call_target="__cudnn$convForwardGraph"
+})";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
+                          ParseAndReturnVerifiedModule(hlo));
+  ComputationLayout computation_layout(
+      hlo_module->entry_computation()->ComputeProgramShape());
+
+  GpuLayoutAssignment layout_assignment(
+      &computation_layout, se::CudaComputeCapability::Hopper(), GetDnnVersion(),
+      GetDeviceDescription());
+
+  EXPECT_THAT(layout_assignment.Run(hlo_module.get()), IsOkAndHolds(true));
+
+  // We start from b10f_o10i->b10f, meaning that the inputs start out as
+  // NWHC_OWHI->NWHC. Layout assignment should yield layouts of the form
+  // {3,1,2,0} (transpose the middle dimensions) for both inputs and for the
+  // output, therefore, in order to get to the desired NHWC_OHWI->NHWC layout.
+  EXPECT_THAT(
+      RunFileCheck(hlo_module->ToString(HloPrintOptions::ShortParsable()), R"(
+// CHECK-DAG: [[P0:[^ ]+]] = {{.*}} parameter(0)
+// CHECK-DAG: [[P1:[^ ]+]] = {{.*}} parameter(1)
+// CHECK-DAG: [[COPY_P0:[^ ]+]] = {{.*}}{3,1,2,0} copy([[P0]])
+// CHECK-DAG: [[COPY_P1:[^ ]+]] = {{.*}}{3,1,2,0} copy([[P1]])
+// CHECK:     [[CONV:[^ ]+]] = {{.*}}{3,1,2,0}, {{.*}} custom-call([[COPY_P0]], [[COPY_P1]])
+)"),
+      IsOkAndHolds(true));
+}
+
+TEST_F(LayoutAssignmentTest, F64CuDNNConvolutionHasNCHWLayoutPostHopper) {
+  const char* hlo = R"(
+ENTRY entry {
+  p0 = f64[2,64,64,16]{3,2,1,0} parameter(0)
+  p1 = f64[6,16,3,32]{3,2,1,0} parameter(1)
+  ROOT conv = (f64[2,64,64,32]{3,2,1,0}, u8[0]{0}) custom-call(p0, p1),
+    window={size=3x3 pad=1_1x1_1}, dim_labels=b10f_o10i->b10f,
+    custom_call_target="__cudnn$convForwardGraph"
+})";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
+                          ParseAndReturnVerifiedModule(hlo));
+  ComputationLayout computation_layout(
+      hlo_module->entry_computation()->ComputeProgramShape());
+
+  GpuLayoutAssignment layout_assignment(
+      &computation_layout, se::CudaComputeCapability::Hopper(), GetDnnVersion(),
+      GetDeviceDescription());
+
+  EXPECT_THAT(layout_assignment.Run(hlo_module.get()), IsOkAndHolds(true));
+
+  // We start from b10f_o10i->b10f, meaning that the inputs start out as
+  // NWHC_OWHI->NWHC. Layout assignment should yield layouts of the form
+  // {1,2,3,0} for both inputs and for the output, therefore, in order to get to
+  // the desired NCHW_OIHW->NCHW layout.
+  EXPECT_THAT(
+      RunFileCheck(hlo_module->ToString(HloPrintOptions::ShortParsable()), R"(
+// CHECK-DAG: [[P0:[^ ]+]] = {{.*}} parameter(0)
+// CHECK-DAG: [[P1:[^ ]+]] = {{.*}} parameter(1)
+// CHECK-DAG: [[COPY_P0:[^ ]+]] = {{.*}}{1,2,3,0} copy([[P0]])
+// CHECK-DAG: [[COPY_P1:[^ ]+]] = {{.*}}{1,2,3,0} copy([[P1]])
+// CHECK:     [[CONV:[^ ]+]] = {{.*}}{1,2,3,0}, {{.*}} custom-call([[COPY_P0]], [[COPY_P1]])
+)"),
+      IsOkAndHolds(true));
+}
+
 TEST_F(LayoutAssignmentTest, ConvCuDNNF8) {
   if (!GetCudaComputeCapability().IsAtLeast(
           se::CudaComputeCapability::HOPPER)) {
@@ -697,65 +768,6 @@ TEST_F(LayoutAssignmentTest, AutoLayoutE4M3ContractingMinorFirst) {
           m::Dot(m::Parameter(0).WithShape(F8E4M3FN, {128, 5120}, {1, 0}),
                  m::Parameter(1).WithShape(F8E4M3FN, {5120, 10240}, {0, 1}))
               .WithShape(F32, {128, 10240}, {1, 0})));
-}
-
-TEST_F(LayoutAssignmentTest, AutoLayoutS4DotContractingMinorLhs) {
-  const char* hlo = R"(
-  HloModule AutoLayoutS4DotContractingMinorLhs
-
-  ENTRY main {
-    p0 = s4[5120,128] parameter(0)
-    p0.c = bf16[5120,128] convert(p0)
-    p1 = bf16[5120,10240] parameter(1)
-    ROOT dot = bf16[128,10240] dot(p0.c, p1), lhs_contracting_dims={0}, rhs_contracting_dims={0}
-  })";
-  TF_ASSERT_OK_AND_ASSIGN(
-      std::unique_ptr<HloModule> m,
-      ParseAndReturnUnverifiedModule(
-          hlo, {}, HloParserOptions().set_fill_missing_layouts(false)));
-  ComputationLayout computation_layout(
-      m->entry_computation()->ComputeProgramShape(),
-      /*ignore_layouts=*/false);
-  GpuLayoutAssignment layout_assignment(
-      &computation_layout, GetGpuComputeCapability(), GetDnnVersion(),
-      GetDeviceDescription());
-  EXPECT_THAT(layout_assignment.Run(m.get()), IsOkAndHolds(true));
-  EXPECT_THAT(m->entry_computation()->parameter_instruction(0),
-              GmockMatch(m::Parameter(0).WithShape(S4, {5120, 128}, {0, 1})));
-  EXPECT_THAT(
-      m->entry_computation()->parameter_instruction(1),
-      GmockMatch(m::Parameter(1).WithShape(BF16, {5120, 10240}, {1, 0})));
-  EXPECT_THAT(m->entry_computation()->root_instruction(),
-              GmockMatch(m::Dot().WithShape(BF16, {128, 10240}, {1, 0})));
-}
-
-TEST_F(LayoutAssignmentTest, AutoLayoutS4DotContractingMinorRhs) {
-  const char* hlo = R"(
-  HloModule AutoLayoutS4DotContractingMinorRhs
-
-  ENTRY main {
-    p0 = bf16[5120,128] parameter(0)
-    p1 = s4[5120,10240] parameter(1)
-    p1.c = bf16[5120,10240] convert(p1)
-    ROOT dot = bf16[128,10240] dot(p0, p1.c), lhs_contracting_dims={0}, rhs_contracting_dims={0}
-  })";
-  TF_ASSERT_OK_AND_ASSIGN(
-      std::unique_ptr<HloModule> m,
-      ParseAndReturnUnverifiedModule(
-          hlo, {}, HloParserOptions().set_fill_missing_layouts(false)));
-  ComputationLayout computation_layout(
-      m->entry_computation()->ComputeProgramShape(),
-      /*ignore_layouts=*/false);
-  GpuLayoutAssignment layout_assignment(
-      &computation_layout, GetGpuComputeCapability(), GetDnnVersion(),
-      GetDeviceDescription());
-  EXPECT_THAT(layout_assignment.Run(m.get()), IsOkAndHolds(true));
-  EXPECT_THAT(m->entry_computation()->parameter_instruction(0),
-              GmockMatch(m::Parameter(0).WithShape(BF16, {5120, 128}, {1, 0})));
-  EXPECT_THAT(m->entry_computation()->parameter_instruction(1),
-              GmockMatch(m::Parameter(1).WithShape(S4, {5120, 10240}, {0, 1})));
-  EXPECT_THAT(m->entry_computation()->root_instruction(),
-              GmockMatch(m::Dot().WithShape(BF16, {128, 10240}, {1, 0})));
 }
 
 TEST_F(LayoutAssignmentTest, VariadicReduceSameOperandLayout) {

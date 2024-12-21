@@ -18,7 +18,6 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -4720,7 +4719,7 @@ TEST_F(HloParserTest, ParseDynamicTuple) {
 }
 
 TEST_F(HloParserTest, ParseInvalidDimLevel) {
-  constexpr std::string_view shape_string = "f32[123]{0:D(D+~)}";
+  constexpr absl::string_view shape_string = "f32[123]{0:D(D+~)}";
   absl::StatusOr<Shape> result = ParseShape(shape_string);
   ASSERT_THAT(
       result.status(),
@@ -5740,8 +5739,7 @@ TEST_F(HloParserTest, TranscendentalAccuracyMode) {
   expected_result_accuracy.set_mode(ResultAccuracy::HIGHEST);
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           ParseAndReturnUnverifiedModule(hlo_string));
-  auto* unary = Cast<HloUnaryInstruction>(
-      module->entry_computation()->root_instruction());
+  auto* unary = module->entry_computation()->root_instruction();
   EXPECT_TRUE(protobuf_util::ProtobufEquals(unary->result_accuracy(),
                                             expected_result_accuracy));
 }
@@ -5778,8 +5776,7 @@ TEST_F(HloParserTest, TranscendentalAccuracyRtol) {
   *expected_result_accuracy.mutable_tolerance() = tolerance;
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           ParseAndReturnUnverifiedModule(hlo_string));
-  auto* unary = Cast<HloUnaryInstruction>(
-      module->entry_computation()->root_instruction());
+  auto* unary = module->entry_computation()->root_instruction();
   EXPECT_TRUE(protobuf_util::ProtobufEquals(unary->result_accuracy(),
                                             expected_result_accuracy));
 }
@@ -5826,8 +5823,7 @@ TEST_F(HloParserTest, TranscendentalAccuracyNoConfig) {
   ResultAccuracy default_result_accuracy;
   default_result_accuracy.set_mode(ResultAccuracy::DEFAULT);
   EXPECT_TRUE(protobuf_util::ProtobufEquals(
-      Cast<HloUnaryInstruction>(module->entry_computation()->root_instruction())
-          ->result_accuracy(),
+      module->entry_computation()->root_instruction()->result_accuracy(),
       default_result_accuracy));
 }
 
@@ -5844,6 +5840,22 @@ ENTRY main {
   EXPECT_NE(absl::OkStatus(), result.status());
   ExpectHasSubstr(result.status().message(),
                   "error: unexpected attribute \"result_accuracy\"");
+}
+
+TEST_F(HloParserTest, EmptyOriginalValueIsPrintedCorrectly) {
+  const std::string hlo_string = R"(HloModule test
+
+ENTRY %test {
+  ROOT op = f32[] parameter(0), origin={}
+}
+
+
+)";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  ExpectHasSubstr(module->ToString(HloPrintOptions::Fingerprint()),
+                  "origin={}");
 }
 
 }  // namespace

@@ -809,18 +809,235 @@ llvm::Value* EmitF8e4m3b11fnuzToF16(llvm::Value* f8_value,
   return f16_value;
 }
 
+absl::StatusOr<llvm::Value*> EmitF16ToF4e2m1fn(llvm::Value* f16_value,
+                                               llvm::IRBuilderBase* b) {
+  auto i8_const = [&](int val) {
+    return llvm::ConstantInt::get(b->getInt8Ty(), val);
+  };
+  auto i16_const = [&](int val) {
+    return llvm::ConstantInt::get(b->getInt16Ty(), val);
+  };
+  constexpr int mantissa_diff = 9;  // 10 for F16, 1 for F4
+  constexpr int bias_diff = 14;     // 15 for F16, 1 for F4
+
+  // Cast the input value to an integer for bitwise manipulation.
+  // Get the absolute value of the input (discard the sign).
+  //   f16_bits = bitcast(f16_value, int)
+  //   f16_abs_bits = f16_bits & 0x7FFF
+  llvm::Value* f16_bits = b->CreateBitCast(f16_value, b->getInt16Ty());
+  llvm::Value* f16_abs_bits = b->CreateAnd(f16_bits, i16_const(0x7FFF));
+
+  // If the input absolute value is >= 7.0 or an infinity, the result saturates
+  // to max value (6.0). If (0.75 <= input < 1), the result is rounded to 1.0.
+  // If (0 <= input <= 0.25), the result is rounded to 0.0.
+  // If the input is NaN, the result is undefined (implemented as minus zero).
+  // The rest of the cases are handled by the "happy path".
+  //   is_overflow = f16_abs_bits >= 0x1.Cp2
+  //   is_one = f16_abs_bits >= 0x1.8p-1  (used only if exponent underflows)
+  //   is_zero = f16_abs_bits <= 0x1p-2   (used only if exponent underflows)
+  //   is_nan = f16_abs_bits > 0x7C00  (F16 NaN threshold)
+  llvm::Value* is_overflow =
+      b->CreateICmpUGE(f16_abs_bits, i16_const(0x4700));  // 7.0
+  llvm::Value* is_one =
+      b->CreateICmpUGE(f16_abs_bits, i16_const(0x3A00));  // 0.75
+  llvm::Value* is_zero =
+      b->CreateICmpULE(f16_abs_bits, i16_const(0x3400));  // 0.25
+  llvm::Value* is_nan =
+      b->CreateICmpUGT(f16_abs_bits, i16_const(0x7C00));  // inf
+
+  // Truncate the mantissa to 1 bit and the exponent to 3 bits (not 2 bits, as
+  // the type doesn't have Inf/NaN and can represent unbiased exponent 2).
+  // This case, as well as the denormal, is handled below.
+  TF_ASSIGN_OR_RETURN(
+      llvm::Value * reduced_precision,
+      EmitReducePrecisionIR(
+          /*src_ty=*/F16, f16_value,
+          /*dest_exponent_bits=*/primitive_util::ExponentWidth(F4E2M1FN) + 1,
+          /*dest_mantissa_bits=*/primitive_util::SignificandWidth(F4E2M1FN) - 1,
+          /*quiet_nans=*/false, b));
+
+  // Cast the reduced precision value to an integer for bitwise manipulation.
+  // Discard the least significant (9) mantissa bits leaving 1 bit.
+  // Truncate to
+  //   as_int16 = bitcast(reduced_precision, int)
+  //   as_int8 = as_int16 >> (f16_mantissa - f4_mantissa)
+  llvm::Value* as_int16 = b->CreateBitCast(reduced_precision, b->getInt16Ty());
+  llvm::Value* as_int8 =
+      b->CreateTrunc(b->CreateLShr(as_int16, mantissa_diff), b->getInt8Ty());
+
+  // Get the sign (0 or 1).
+  //   f4_sign = as_int8 >> 6
+  llvm::Value* f4_sign = b->CreateLShr(as_int8, 6);
+
+  // Get exponent and mantissa bits without the sign.
+  // Important: the mask is 0x3F (not 0x7F), discard bit #6.
+  //   f4_bits = as_int8 & 0x3F
+  llvm::Value* f4_bits = b->CreateAnd(as_int8, i8_const(0x3F));
+
+  // Convert F16 exponent to F4 exponent by readjusting the exponent bias.
+  // This produces the "normal" result, i.e. not Inf or NaN or denormal.
+  //   f4_normal = f4_bits - ((f16_bias - f4_bias) << f4_mantissa)
+  constexpr int f4_exponent_offset = bias_diff << 1;
+  llvm::Value* f4_normal = b->CreateSub(f4_bits, i8_const(f4_exponent_offset));
+
+  // If the rounding resulted in zero exponent, the value is incorrect.
+  // This happens when the input is < 1.0
+  //   is_underflow = f4_normal <= 1
+  llvm::Value* is_underflow = b->CreateICmpSLE(f4_normal, i8_const(1));
+
+  // Chain of selects that handles the special cases.
+  //   f4_result =
+  //     is_underflow ? (is_one ? 1.0 : (is_zero ? 0.0 : 0.5)) :
+  //     is_overflow ? (is_nan ? -0.0 : 6.0) :
+  //     f4_normal
+  llvm::Value* f4_result = b->CreateSelect(
+      is_underflow,
+      // If underflow, the input is < 1.0; the result is either 0.0, 0.5 or 1.0
+      b->CreateSelect(is_one, i8_const(0x2),
+                      b->CreateSelect(is_zero, i8_const(0x0), i8_const(0x1))),
+      // If overflow, the input is >= 7.0 or infinity or NaN.
+      b->CreateSelect(is_overflow,
+                      b->CreateSelect(is_nan, i8_const(0x8), i8_const(0x7)),
+                      f4_normal));
+
+  // Add sign to the resulting value.
+  //   f4_signed_result = (f4_sign << 3) | f4_result
+  return b->CreateOr(f4_result, b->CreateShl(f4_sign, 3));
+}
+
+llvm::Value* EmitF4e2m1fnToF16(llvm::Value* f8_value, llvm::IRBuilderBase* b) {
+  auto i16_const = [&](int val) {
+    return llvm::ConstantInt::get(b->getInt16Ty(), val);
+  };
+  constexpr int mantissa_diff = 9;  // 10 for F16, 1 for F4
+  constexpr int bias_diff = 14;     // 15 for F16, 1 for F4
+
+  // The input value is a 8-bit integer, extend it to 16-bit integer.
+  //   as_int16 = bitcast(f8_value, int)
+  llvm::Value* as_int16 = b->CreateZExt(f8_value, b->getInt16Ty());
+
+  // Get the sign and shift it to F16 position.
+  //   f4_sign = as_int16 >> 3
+  //   f16_sign_bit = f4_sign << 15
+  llvm::Value* f4_sign = b->CreateLShr(as_int16, 3);
+  llvm::Value* f16_sign_bit = b->CreateShl(f4_sign, 15);
+
+  // Get exponent and mantissa bits without the sign.
+  //   f4_bits = as_int16 & 0x7
+  //   f16_bits = f4_bits << (f16_mantissa - f4_mantissa)
+  llvm::Value* f4_bits = b->CreateAnd(as_int16, i16_const(0x7));
+  llvm::Value* f16_bits = b->CreateShl(f4_bits, mantissa_diff);
+
+  // Convert F16 exponent to F4 exponent by readjusting the exponent bias.
+  //   f4_normal = f4_bits - ((f16_bias - f4_bias) << f4_mantissa)
+  constexpr int f16_exponent_offset = bias_diff << 10;
+  llvm::Value* f16_normal =
+      b->CreateAdd(f16_bits, i16_const(f16_exponent_offset));
+
+  // For denormal and zero, the exponent is different. Handle these cases
+  // separately below.
+  //   is_denorm_or_zero = f4_bits <= 1
+  //   is_zero = f4_bits == 0
+  llvm::Value* is_denorm_or_zero = b->CreateICmpULE(f4_bits, i16_const(1));
+  llvm::Value* is_zero = b->CreateICmpEQ(f4_bits, i16_const(0));
+
+  // Chain of selects that handles the special cases.
+  //   f16_result = is_denorm_or_zero ? (is_zero ? 0.0 : 0.5) : f16_normal
+  llvm::Value* f16_result = b->CreateSelect(
+      is_denorm_or_zero,
+      b->CreateSelect(is_zero, i16_const(0x0000), i16_const(0x3800)),
+      f16_normal);
+
+  // Add sign to the resulting value.
+  //   f16_signed_result = f16_sign_bit | f16_result
+  llvm::Value* f16_signed_result = b->CreateOr(f16_result, f16_sign_bit);
+  return b->CreateBitCast(f16_signed_result, b->getHalfTy());
+}
+
+llvm::Value* EmitF32ToF8e8m0fnu(llvm::Value* f32_value,
+                                llvm::IRBuilderBase* b) {
+  auto i32_const = [&](int val) {
+    return llvm::ConstantInt::get(b->getInt32Ty(), val);
+  };
+
+  // Cast the input value to an integer for bitwise manipulation.
+  //   as_int32 = bitcast(f32_value, int)
+  llvm::Value* as_int32 = b->CreateBitCast(f32_value, b->getInt32Ty());
+
+  // Check if the input is zero, negative, overflow, infinity or NaN.
+  // All of these cases cannot be represented in the E8M0 format.
+  //   is_zero_or_negative = as_int32 <= 0
+  //   is_overflow_or_nan = as_int32 >= 0x1.8p127
+  //   is_nan = is_zero_or_negative | is_overflow_or_nan
+  llvm::Value* is_zero_or_negative = b->CreateICmpSLE(as_int32, i32_const(0));
+  llvm::Value* is_overflow_or_nan =
+      b->CreateICmpSGE(as_int32, i32_const(0x7F400000));  // 1.5 * 2^127
+  llvm::Value* is_nan = b->CreateOr(is_zero_or_negative, is_overflow_or_nan);
+
+  // Check if the input is a denormal which should round to the minimum value
+  // (2^-127), as there is no zero value.
+  //   is_denorm = as_int32 <= 0x1p-127
+  llvm::Value* is_denorm =
+      b->CreateICmpULE(as_int32, i32_const(0x400000));  // 1.0 * 2^-127
+
+  // Round the value (always up) and discard the mantissa.
+  //   rounded = as_int32 + 0x1p-127
+  //   f8_normal = as_int32 >> f32_mantissa
+  llvm::Value* rounded =
+      b->CreateAdd(as_int32, i32_const(0x400000));  // 1.0 * 2^-127
+  llvm::Value* f8_normal = b->CreateAShr(rounded, 23);
+
+  // Chain of selects that handles the special cases.
+  //   f8_result = is_nan ? 0xFF : (is_denorm ? 0x00 : f8_normal)
+  llvm::Value* f8_result =
+      b->CreateSelect(is_nan, i32_const(0xFF),
+                      b->CreateSelect(is_denorm, i32_const(0x00), f8_normal));
+
+  // Truncate to the result type.
+  return b->CreateTrunc(f8_result, b->getInt8Ty());
+}
+
+llvm::Value* EmitF8e8m0fnuToF32(llvm::Value* f8_value, llvm::IRBuilderBase* b) {
+  auto i32_const = [&](int val) {
+    return llvm::ConstantInt::get(b->getInt32Ty(), val);
+  };
+
+  // The input value is a 8-bit integer, extend it to 32-bit integer.
+  //   as_int32 = bitcast(f8_value, int)
+  llvm::Value* as_int32 = b->CreateZExt(f8_value, b->getInt32Ty());
+
+  // Check if the input is a denormal or NaN.
+  //   is_zero = as_int32 == 0x00
+  //   is_nan = as_int32 == 0xFF
+  llvm::Value* is_zero = b->CreateICmpEQ(as_int32, i32_const(0));
+  llvm::Value* is_nan = b->CreateICmpEQ(as_int32, i32_const(0xFF));
+
+  // Shift exponent to the left for the normal case.
+  //   f32_normal = as_int32 << mantissa_diff
+  llvm::Value* f32_normal = b->CreateShl(as_int32, 23);
+
+  // Chain of selects that handles the special cases.
+  //   f32_result = is_nan ? 0x7FC00000 : (is_zero ? 0x1p-127 : f32_normal)
+  llvm::Value* f32_result = b->CreateSelect(
+      is_nan, i32_const(0x7FC00000),
+      b->CreateSelect(is_zero, i32_const(0x400000), f32_normal));
+
+  // Bitcast integer bits to the result type.
+  return b->CreateBitCast(f32_result, b->getFloatTy());
+}
+
 llvm::Value* EmitIntegralToFloating(llvm::Value* integer_value,
                                     PrimitiveType from_type,
                                     PrimitiveType to_type, llvm::Module* module,
                                     llvm::IRBuilderBase* b) {
   if (primitive_util::IsSignedIntegralType(from_type)) {
-    return b->CreateSIToFP(integer_value,
-                           llvm_ir::PrimitiveTypeToIrType(to_type, module));
+    return b->CreateSIToFP(integer_value, llvm_ir::PrimitiveTypeToIrType(
+                                              to_type, module->getContext()));
   } else {
     CHECK(primitive_util::IsUnsignedIntegralType(from_type) ||
           from_type == PRED);
-    return b->CreateUIToFP(integer_value,
-                           llvm_ir::PrimitiveTypeToIrType(to_type, module));
+    return b->CreateUIToFP(integer_value, llvm_ir::PrimitiveTypeToIrType(
+                                              to_type, module->getContext()));
   }
 }
 
@@ -870,12 +1087,13 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
         return b_->CreateZExt(
             ICmpNE(operand_value,
                    llvm::ConstantInt::get(operand_value->getType(), 0)),
-            llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+            llvm_ir::PrimitiveTypeToIrType(PRED, module_->getContext()));
       }
       if (primitive_util::IsIntegralType(to_type)) {
-        return IntCast(operand_value,
-                       llvm_ir::PrimitiveTypeToIrType(to_type, module_),
-                       primitive_util::IsSignedIntegralType(from_type));
+        return IntCast(
+            operand_value,
+            llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext()),
+            primitive_util::IsSignedIntegralType(from_type));
       }
       if (primitive_util::IsFloatingPointType(to_type)) {
         if (to_type == F8E5M2) {
@@ -902,6 +1120,18 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
                                      b_),
               b_);
         }
+        if (to_type == F4E2M1FN) {
+          return EmitF16ToF4e2m1fn(
+              EmitIntegralToFloating(operand_value, from_type, F16, module_,
+                                     b_),
+              b_);
+        }
+        if (to_type == F8E8M0FNU) {
+          return EmitF32ToF8e8m0fnu(
+              EmitIntegralToFloating(operand_value, from_type, F32, module_,
+                                     b_),
+              b_);
+        }
         if (to_type == F8E5M2FNUZ || to_type == F8E4M3FNUZ) {
           return EmitFloatingToF8fnuz(
               F16,
@@ -920,7 +1150,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
       }
       if (primitive_util::IsComplexType(to_type)) {
         auto to_ir_component_type = llvm_ir::PrimitiveTypeToIrType(
-            primitive_util::ComplexComponentType(to_type), module_);
+            primitive_util::ComplexComponentType(to_type),
+            module_->getContext());
         if (primitive_util::IsSignedIntegralType(from_type)) {
           return EmitComposeComplex(
               op, SIToFP(operand_value, to_ir_component_type), nullptr);
@@ -944,8 +1175,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
       }
       if (primitive_util::BitWidth(from_type) ==
           primitive_util::BitWidth(to_type)) {
-        return BitCast(operand_value,
-                       llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        return BitCast(operand_value, llvm_ir::PrimitiveTypeToIrType(
+                                          to_type, module_->getContext()));
       }
       return InvalidArgument(
           "bitcast conversion from primitive type %s to %s with unequal "
@@ -958,8 +1189,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
       bool is_signed =
           primitive_util::IsSignedIntegralType(op->shape().element_type());
       if (is_signed) {
-        auto type =
-            llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(), module_);
+        auto type = llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(),
+                                                   module_->getContext());
         auto cmp = ICmpSGE(operand_value, GetZero(type));
         return Select(cmp, operand_value, Neg(operand_value));
       } else {
@@ -975,8 +1206,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
     case HloOpcode::kSign: {
       CHECK(primitive_util::IsSignedIntegralType(op->shape().element_type()))
           << op->shape().element_type();
-      auto type =
-          llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(), module_);
+      auto type = llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(),
+                                                 module_->getContext());
       auto cmp = ICmpEQ(operand_value, GetZero(type));
       auto ashr = AShr(operand_value, type->getIntegerBitWidth() - 1);
       return Select(cmp, GetZero(type), Or(ashr, 1));
@@ -989,8 +1220,9 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
         // It is not sufficient to just call CreateNot() here because a PRED
         // is represented as an i8 and the truth value is stored only in the
         // bottom bit.
-        return b_->CreateZExt(Not(Trunc(operand_value, b_->getInt1Ty())),
-                              llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+        return b_->CreateZExt(
+            Not(Trunc(operand_value, b_->getInt1Ty())),
+            llvm_ir::PrimitiveTypeToIrType(PRED, module_->getContext()));
       } else if (primitive_util::IsIntegralType(type)) {
         return Not(operand_value);
       }
@@ -1105,10 +1337,29 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
           return operand_value;
         }
       }
+      if (from_type == F4E2M1FN) {
+        TF_RET_CHECK(to_type != F4E2M1FN);
+        operand_value = EmitF4e2m1fnToF16(operand_value, b_);
+        from_type = F16;
+        if (from_type == to_type) {
+          return operand_value;
+        }
+      }
+      if (from_type == F8E8M0FNU) {
+        TF_RET_CHECK(to_type != F8E8M0FNU);
+        operand_value = EmitF8e8m0fnuToF32(operand_value, b_);
+        from_type = F32;
+        if (from_type == to_type) {
+          return operand_value;
+        }
+      }
       if (from_type == F8E5M2FNUZ || from_type == F8E4M3FNUZ) {
         TF_RET_CHECK(to_type != from_type);
         PrimitiveType cast_type =
             primitive_util::IsFloatingPointType(to_type) ? to_type : F16;
+        if (to_type == F8E8M0FNU || to_type == F4E2M1FN) {
+          cast_type = F32;
+        }
         TF_ASSIGN_OR_RETURN(operand_value,
                             EmitF8fnuzToFloating(from_type, operand_value,
                                                  cast_type, b_, module_));
@@ -1134,7 +1385,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         return EmitComposeComplex(
             op,
             FPCast(operand_value,
-                   llvm_ir::PrimitiveTypeToIrType(to_component_type, module_)),
+                   llvm_ir::PrimitiveTypeToIrType(to_component_type,
+                                                  module_->getContext())),
             nullptr);
       }
       if (to_type == BF16) {
@@ -1148,7 +1400,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E5M2 must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e5m2(operand_value, b_);
       }
@@ -1156,7 +1409,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E4M3 must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e<4>(operand_value, b_);
       }
@@ -1164,7 +1418,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E4M3FN must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e4m3fn(operand_value, b_);
       }
@@ -1172,9 +1427,28 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E4M3B11FNUZ must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e4m3b11fnuz(operand_value, b_);
+      }
+      if (to_type == F4E2M1FN) {
+        // Cast to F16 first. Casts to F4E2M1FN must be from F16.
+        if (from_type != F16) {
+          operand_value = b_->CreateFPCast(
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
+        }
+        return EmitF16ToF4e2m1fn(operand_value, b_);
+      }
+      if (to_type == F8E8M0FNU) {
+        // Cast to F32 first. Casts to F8E8M0FNU must be from F32.
+        if (from_type != F32) {
+          operand_value = b_->CreateFPCast(
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F32, module_->getContext()));
+        }
+        return EmitF32ToF8e8m0fnu(operand_value, b_);
       }
       if (to_type == F8E5M2FNUZ || to_type == F8E4M3FNUZ) {
         return EmitFloatingToF8fnuz(from_type, operand_value, to_type, b_);
@@ -1183,7 +1457,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E3M4 must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e<3>(operand_value, b_);
       }
@@ -1191,13 +1466,15 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         return b_->CreateZExt(
             FCmpUNE(operand_value,
                     llvm::ConstantFP::get(operand_value->getType(), 0.0)),
-            llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+            llvm_ir::PrimitiveTypeToIrType(PRED, module_->getContext()));
       }
-      auto* to_ir_type = llvm_ir::PrimitiveTypeToIrType(to_type, module_);
+      auto* to_ir_type =
+          llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext());
       if (primitive_util::IsFloatingPointType(to_type)) {
         return FPCast(operand_value, to_ir_type);
       }
-      auto* from_ir_type = llvm_ir::PrimitiveTypeToIrType(from_type, module_);
+      auto* from_ir_type =
+          llvm_ir::PrimitiveTypeToIrType(from_type, module_->getContext());
       int to_width = primitive_util::BitWidth(to_type);
       if (primitive_util::IsSignedIntegralType(to_type)) {
         int64_t min_int = llvm::minIntN(to_width);
@@ -1207,8 +1484,9 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         auto max_value_int = llvm::ConstantInt::get(to_ir_type, max_int);
         auto min_value_float = llvm::ConstantFP::get(from_ir_type, min_int);
         auto max_value_float = llvm::ConstantFP::get(from_ir_type, max_int);
-        auto clamped = FPToSI(operand_value,
-                              llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        auto clamped = FPToSI(
+            operand_value,
+            llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext()));
         // x <= static_cast<float>(INT_MIN) ? INT_MIN : ...
         clamped = Select(FCmpOLE(operand_value, min_value_float), min_value_int,
                          clamped);
@@ -1227,8 +1505,9 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         auto max_value_int = llvm::ConstantInt::get(to_ir_type, max_int);
         auto min_value_float = llvm::ConstantFP::get(from_ir_type, min_int);
         auto max_value_float = llvm::ConstantFP::get(from_ir_type, max_int);
-        auto clamped = FPToUI(operand_value,
-                              llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        auto clamped = FPToUI(
+            operand_value,
+            llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext()));
         // (x <= 0.0 || isnan(x)) ? 0 : ...
         clamped = Select(FCmpULE(operand_value, min_value_float), min_value_int,
                          clamped);
@@ -1250,8 +1529,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
       }
       if (primitive_util::BitWidth(from_type) ==
           primitive_util::BitWidth(to_type)) {
-        return BitCast(operand_value,
-                       llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        return BitCast(operand_value, llvm_ir::PrimitiveTypeToIrType(
+                                          to_type, module_->getContext()));
       }
       return InvalidArgument(
           "bitcast conversion from primitive type %s to %s with unequal "
@@ -1327,8 +1606,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
           llvm::Intrinsic::fabs, {operand_value}, {type}, b_);
       auto infinity = llvm::ConstantFP::getInfinity(type);
       auto not_infinite = FCmpONE(abs_value, infinity);
-      return b_->CreateZExt(not_infinite,
-                            llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+      return b_->CreateZExt(not_infinite, llvm_ir::PrimitiveTypeToIrType(
+                                              PRED, module_->getContext()));
     }
     case HloOpcode::kNegate:
       return FNeg(operand_value);
@@ -1424,8 +1703,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitComplexUnaryOp(
       }
       PrimitiveType to_component_type =
           primitive_util::ComplexComponentType(to_type);
-      auto to_ir_component_type =
-          llvm_ir::PrimitiveTypeToIrType(to_component_type, module_);
+      auto to_ir_component_type = llvm_ir::PrimitiveTypeToIrType(
+          to_component_type, module_->getContext());
       return EmitComposeComplex(
           op, FPCast(EmitExtractReal(operand_value), to_ir_component_type),
           FPCast(EmitExtractImag(operand_value), to_ir_component_type));
@@ -1721,6 +2000,12 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatBinaryOp(
       } else if (operand_type == F8E4M3FN) {
         lhs_value = EmitF8e4m3fnToF16(lhs_value, b_);
         rhs_value = EmitF8e4m3fnToF16(rhs_value, b_);
+      } else if (operand_type == F4E2M1FN) {
+        lhs_value = EmitF4e2m1fnToF16(lhs_value, b_);
+        rhs_value = EmitF4e2m1fnToF16(rhs_value, b_);
+      } else if (operand_type == F8E8M0FNU) {
+        lhs_value = EmitF8e8m0fnuToF32(lhs_value, b_);
+        rhs_value = EmitF8e8m0fnuToF32(rhs_value, b_);
       } else if (operand_type == F8E5M2FNUZ || operand_type == F8E4M3FNUZ) {
         TF_ASSIGN_OR_RETURN(
             lhs_value,
@@ -2270,7 +2555,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitComplexBinaryOp(
       TF_ASSIGN_OR_RETURN(
           auto sqrt_x_squared_plus_y_squared,
           EmitComplexSqrt(op, component_type, x_squared_plus_y_squared));
-      auto type = llvm_ir::PrimitiveTypeToIrType(component_type, module_);
+      auto type =
+          llvm_ir::PrimitiveTypeToIrType(component_type, module_->getContext());
       auto zero = llvm::ConstantFP::get(type, 0.0);
       auto one = llvm::ConstantFP::get(type, 1.0);
       auto i = EmitComposeComplex(op, zero, one);
@@ -2311,7 +2597,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitLog(
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitLog1p(
     PrimitiveType prim_type, llvm::Value* value) {
   auto x = value;
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto one = llvm::ConstantFP::get(type, 1.0);
   auto negative_half = llvm::ConstantFP::get(type, -0.5);
   // When x is large, the naive evaluation of ln(x + 1) is more
@@ -2385,7 +2671,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitCos(
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitCosm1(
     PrimitiveType prim_type, llvm::Value* value) {
   auto x = value;
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto negative_half = llvm::ConstantFP::get(type, -0.5);
   auto negative_one = llvm::ConstantFP::get(type, -1.0);
 
@@ -2430,7 +2716,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitExp(
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitExpm1(
     PrimitiveType prim_type, llvm::Value* value) {
   auto x = value;
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto one = llvm::ConstantFP::get(type, 1.0);
   auto half = llvm::ConstantFP::get(type, 0.5);
   auto zero = llvm::ConstantFP::get(type, 0.0);
@@ -2462,7 +2748,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitPow(
 
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitCbrt(
     PrimitiveType prim_type, llvm::Value* value) {
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto third = llvm::ConstantFP::get(type, 1.0 / 3.0);
   auto abs_value =
       llvm_ir::EmitCallToIntrinsic(llvm::Intrinsic::fabs, {value}, {type}, b_);
@@ -2844,9 +3130,10 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalConcatenate(
   }
 
   llvm_ir::SetToFirstInsertPoint(exit_block, b_);
-  llvm::PHINode* output = b_->CreatePHI(
-      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(), module_),
-      hlo->operands().size());
+  llvm::PHINode* output =
+      b_->CreatePHI(llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(),
+                                                   module_->getContext()),
+                    hlo->operands().size());
   auto prior_insert_point = b_->GetInsertPoint();
 
   b_->SetInsertPoint(init_block);
@@ -3207,7 +3494,8 @@ ElementalIrEmitter::EmitElementalDynamicUpdateSlice(
   // if (slice_intersection) -> return data from 'update'.
   // else                    -> return data from 'input'.
   llvm::AllocaInst* ret_value_addr = llvm_ir::EmitAllocaAtFunctionEntry(
-      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(), module_),
+      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(),
+                                     module_->getContext()),
       "ret_value_addr", b_);
   llvm_ir::LlvmIfData if_data =
       llvm_ir::EmitIfThenElse(slice_intersection, "slice_intersection", b_);
@@ -3271,7 +3559,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalPad(
   //   ret_value = *operand1;        // padding
   // }
   llvm::AllocaInst* ret_value_addr = llvm_ir::EmitAllocaAtFunctionEntry(
-      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(), module_),
+      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(),
+                                     module_->getContext()),
       "pad_result_addr", b_);
   llvm_ir::LlvmIfData if_data =
       llvm_ir::EmitIfThenElse(in_bounds, "in_bounds", b_);
@@ -3335,9 +3624,10 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalDot(
   SetToFirstInsertPoint(inner_loop->GetPreheaderBasicBlock(), b_);
   PrimitiveType primitive_type = hlo->shape().element_type();
   llvm::Type* primitive_type_llvm =
-      llvm_ir::PrimitiveTypeToIrType(primitive_type, module_);
+      llvm_ir::PrimitiveTypeToIrType(primitive_type, module_->getContext());
   if (primitive_type == BF16) {
-    primitive_type_llvm = llvm_ir::PrimitiveTypeToIrType(F32, module_);
+    primitive_type_llvm =
+        llvm_ir::PrimitiveTypeToIrType(F32, module_->getContext());
   }
   llvm::AllocaInst* accumulator_alloca =
       llvm_ir::EmitAllocaAtFunctionEntry(primitive_type_llvm, "dot_acc", b_);
@@ -3562,20 +3852,21 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
         if (primitive_util::IsIntegralType(component_element_type)) {
           iota_result = b_->CreateIntCast(
               elem_index_linear,
-              llvm_ir::PrimitiveTypeToIrType(component_element_type, module_),
+              llvm_ir::PrimitiveTypeToIrType(component_element_type,
+                                             module_->getContext()),
               /*isSigned=*/false);
         } else {
           TF_RET_CHECK(
               primitive_util::IsFloatingPointType(component_element_type))
               << component_element_type;
           llvm::Type* float_ir_type;
-          if (component_element_type == F8E4M3FNUZ) {
-            float_ir_type = llvm_ir::PrimitiveTypeToIrType(F16, module_);
-          } else if (component_element_type == F8E5M2FNUZ) {
-            float_ir_type = llvm_ir::PrimitiveTypeToIrType(F16, module_);
-          } else {
+          if (component_element_type == F8E4M3FNUZ ||
+              component_element_type == F8E5M2FNUZ) {
             float_ir_type =
-                llvm_ir::PrimitiveTypeToIrType(component_element_type, module_);
+                llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext());
+          } else {
+            float_ir_type = llvm_ir::PrimitiveTypeToIrType(
+                component_element_type, module_->getContext());
           }
           llvm::Value* float_val =
               b_->CreateUIToFP(elem_index_linear, float_ir_type);
@@ -3731,8 +4022,8 @@ llvm::Value* ElementalIrEmitter::EmitExtractImag(llvm::Value* value) {
 llvm::Value* ElementalIrEmitter::EmitComposeComplex(const HloInstruction* op,
                                                     llvm::Value* real,
                                                     llvm::Value* imag) {
-  auto cplx_type =
-      llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(), module_);
+  auto cplx_type = llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(),
+                                                  module_->getContext());
   auto complex =
       InsertValue(llvm::ConstantAggregateZero::get(cplx_type), real, {0});
   if (imag != nullptr) {
@@ -3797,11 +4088,12 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalReduceWindow(
     auto operand = reduce_window->inputs()[operand_index];
     PrimitiveType operand_element_type = operand->shape().element_type();
     operand_element_types.push_back(operand_element_type);
-    llvm::Type* llvm_type =
-        llvm_ir::PrimitiveTypeToIrType(operand_element_type, module_);
+    llvm::Type* llvm_type = llvm_ir::PrimitiveTypeToIrType(
+        operand_element_type, module_->getContext());
     accum_types.push_back(llvm_type);
     llvm::Value* accum_ptr = llvm_ir::EmitAllocaAtFunctionEntry(
-        llvm_ir::PrimitiveTypeToIrType(operand_element_type, module_),
+        llvm_ir::PrimitiveTypeToIrType(operand_element_type,
+                                       module_->getContext()),
         "reduce_window_accum_ptr", b_);
     accum_ptrs.push_back(accum_ptr);
     {
@@ -3923,7 +4215,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalReduce(
         is_variadic ? out_shape.tuple_shapes(i) : out_shape;
     PrimitiveType accumulator_type = element_shape.element_type();
     llvm::Type* accumulator_llvm_type =
-        llvm_ir::PrimitiveTypeToIrType(accumulator_type, module_);
+        llvm_ir::PrimitiveTypeToIrType(accumulator_type, module_->getContext());
     accumulator_types.push_back(accumulator_llvm_type);
 
     // Initialize an accumulator with init_value.
@@ -4037,7 +4329,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitConvolution(
   // at the given index.
   PrimitiveType lhs_element_type = lhs->shape().element_type();
   llvm::Type* lhs_llvm_type =
-      llvm_ir::PrimitiveTypeToIrType(lhs_element_type, module_);
+      llvm_ir::PrimitiveTypeToIrType(lhs_element_type, module_->getContext());
   // Upcast the accumulator to F32 from F16 for increased precision.
   llvm::Type* accumulator_type =
       lhs_element_type == F16 ? b_->getFloatTy() : lhs_llvm_type;

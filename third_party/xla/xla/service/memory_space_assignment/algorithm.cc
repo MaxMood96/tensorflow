@@ -29,7 +29,6 @@ limitations under the License.
 #include <optional>
 #include <set>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -244,9 +243,6 @@ bool IsCrossProgramPrefetchCandidate(const HloValue& value,
   return value.defining_instruction()->parent() ==
              value.defining_instruction()->GetModule()->entry_computation() &&
          value.defining_instruction()->opcode() == HloOpcode::kParameter &&
-         (!value.shape().has_layout() ||
-          value.shape().layout().memory_space() !=
-              options.alternate_memory_space) &&
          value.index().size() <= 1 && value.shape().IsArray() &&
          !uses.empty() && options.size_fn(value) <= options.max_size_in_bytes &&
          absl::c_all_of(uses, [&](const HloUse& use) {
@@ -290,11 +286,11 @@ std::vector<MsaBufferInterval> FindCrossProgramPrefetchCandidates(
     interval.need_allocation = true;
     interval.colocations = {++buffer.values().begin(), buffer.values().end()};
     if (IsCrossProgramPrefetchCandidate(*value, alias_analysis, options)) {
-      candidates.emplace_back(interval);
+      candidates.push_back(interval);
     } else if (MemorySpaceAssignmentUtils::
                    DoesCrossProgramPrefetchBufferMatchAnyFilter(
                        options.msa_sort_order_overrides, interval)) {
-      candidates.emplace_back(interval);
+      candidates.push_back(interval);
     }
   }
 
@@ -2982,8 +2978,8 @@ bool AsynchronousCopyResource::ConsumeResource(
         // that was freed when removing the copy.
         float old_resource =
             std::max(0.0f, initial_resources_[time] - delay_[time]);
-        if (delay_change_map && !delay_change_map->contains(time)) {
-          (*delay_change_map)[time] = delay_[time];
+        if (delay_change_map) {
+          delay_change_map->emplace(time, delay_[time]);
         }
         delay_[time] = std::max(0.0f, resource - resource_to_free);
         float new_resource =
@@ -3178,7 +3174,7 @@ std::string AsynchronousCopyResource::Dump(
   std::vector<size_t> col_sizes;
   std::vector<std::vector<std::string>> rows;
   rows.push_back({"time", "initial", "delay", "avail", "overlapping copies"});
-  for (std::string_view col : rows.front()) {
+  for (absl::string_view col : rows.front()) {
     col_sizes.push_back(col.size());
   }
   for (int i = 0; i < time_dump_data.size(); ++i) {
@@ -3239,6 +3235,22 @@ void MsaAlgorithm::CreateOrAddToAliasedOffset(const Allocation& allocation,
   return nullptr;
 }
 
+namespace {
+
+void SetDefaultMemorySpace(const HloValue* value, const Options& options) {
+  for (auto& position : value->positions()) {
+    Shape* shape = ShapeUtil::GetMutableSubshape(
+        position.instruction->mutable_shape(), position.index);
+    if (!shape->has_layout() ||
+        shape->layout().memory_space() != options.alternate_memory_space) {
+      continue;
+    }
+    shape->mutable_layout()->set_memory_space(options.default_memory_space);
+  }
+}
+
+}  // namespace
+
 void MsaAlgorithm::AllocateCrossProgramPrefetchBuffer(
     HloModule* module, const MsaBufferInterval& prefetch_candidate) {
   Chunk chunk_candidate = FindChunkCandidate(prefetch_candidate);
@@ -3250,6 +3262,7 @@ void MsaAlgorithm::AllocateCrossProgramPrefetchBuffer(
   const HloValue* buffer = prefetch_candidate.buffer;
   int64_t parameter = buffer->instruction()->parameter_number();
   int cross_program_prefetch_index = module->CrossProgramPrefetches().size();
+  SetDefaultMemorySpace(buffer, options_);
   module->AddCrossProgramPrefetch(parameter, buffer->index());
 
   AllocationSequence allocations;
@@ -3285,15 +3298,10 @@ void MsaAlgorithm::AllocateCrossProgramPrefetchBuffer(
   }
 
   int64_t end_of_program_prefetch_end_time = instruction_schedule.size();
-  int64_t end_of_program_prefetch_latest_start_time =
-      options_.prefetch_interval_picker->LatestPrefetchStartTime(
-          buffer->defining_position().shape(), last_use_time,
-          end_of_program_prefetch_end_time, nullptr);
   int64_t end_of_program_inclusive_prefetch_start_time =
       options_.prefetch_interval_picker->PreferredPrefetchStartTime(
           buffer->defining_position().shape(), last_use_time,
-          end_of_program_prefetch_latest_start_time,
-          end_of_program_prefetch_end_time);
+          end_of_program_prefetch_end_time, end_of_program_prefetch_end_time);
   VLOG(2) << "last use time = " << last_use_time
           << ", end-of-program inclusive prefetch start time = "
           << end_of_program_inclusive_prefetch_start_time;
@@ -4669,19 +4677,15 @@ bool MsaAlgorithm::ViolatesMaximumOutstandingAsyncCopies(
 
   // Count the prefetches/evictions in the interval tree for the given interval.
   if (is_prefetch) {
-    int64_t num_prefetches =
-        prefetch_interval_tree_
-            .ChunksOverlappingInTime(inclusive_start_time, end_time)
-            .size() +
-        num_additional_copies;
+    int64_t num_prefetches = prefetch_interval_tree_.NumChunksOverlappingInTime(
+                                 inclusive_start_time, end_time) +
+                             num_additional_copies;
     return num_prefetches >=
            options_.max_outstanding_prefetches + extra_async_copy_limit;
   } else {
-    int64_t num_evictions =
-        eviction_interval_tree_
-            .ChunksOverlappingInTime(inclusive_start_time, end_time)
-            .size() +
-        num_additional_copies;
+    int64_t num_evictions = eviction_interval_tree_.NumChunksOverlappingInTime(
+                                inclusive_start_time, end_time) +
+                            num_additional_copies;
     return num_evictions >=
            options_.max_outstanding_evictions + extra_async_copy_limit;
   }

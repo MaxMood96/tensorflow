@@ -37,9 +37,10 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
 #include "tensorflow/compiler/mlir/tfrt/transforms/ifrt/ifrt_types.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
-#include "xla/pjrt/cpu/cpu_client.h"
 #include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
+#include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
+#include "xla/pjrt/plugin/xla_cpu/cpu_topology_description.h"
 #include "xla/python/ifrt/client.h"
 #include "xla/python/ifrt/mock.h"
 #include "xla/python/ifrt/test_util.h"
@@ -49,14 +50,13 @@ limitations under the License.
 #include "tensorflow/core/platform/resource_loader.h"
 #include "tensorflow/core/platform/test.h"
 #include "tsl/platform/protobuf.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace ifrt_serving {
 namespace {
+using ::testing::Eq;
 using ::testing::HasSubstr;
-using ::testing::status::IsOkAndHolds;
+using ::testing::Ne;
 using tsl::testing::StatusIs;
 
 // TODO(b/229726259): Make EqualsProto available in OSS
@@ -85,21 +85,27 @@ inline ::testing::PolymorphicMatcher<ProtoStringMatcher> EqualsProto(
   return ::testing::MakePolymorphicMatcher(ProtoStringMatcher(x));
 }
 
-TEST(Tf2HloTest, Empty) {
+class Tf2HloTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    mlir::DialectRegistry registry;
+    mlir::registerAllDialects(registry);
+    mlir::RegisterAllTensorFlowDialects(registry);
+    context_ = std::make_unique<mlir::MLIRContext>(registry);
+  }
+  TfToHloCompiler tf_to_hlo_compiler_;
+  std::unique_ptr<mlir::MLIRContext> context_;
+};
+
+TEST_F(Tf2HloTest, Empty) {
   // Create test input module
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/tf2hlo_empty.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
-      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, &context);
+      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, context_.get());
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -112,13 +118,13 @@ TEST(Tf2HloTest, Empty) {
       GetCompileMetadata(mlir_module.get(), *client));
   TF_ASSERT_OK(UpdateCompileMetadata(compile_metadata, {}));
 
-  xla::TfrtCpuTopologyDescription cpu_topology =
-      xla::TfrtCpuTopologyDescription::Create(
+  xla::CpuTopologyDescription cpu_topology =
+      xla::CpuTopologyDescription::Create(
           xla::CpuId(), xla::CpuName(), /*platform_version=*/"",
-          /*devices=*/std::vector<std::unique_ptr<xla::TfrtCpuDevice>>{},
+          /*devices=*/std::vector<std::unique_ptr<xla::PjRtDevice>>{},
           /*machine_attributes=*/std::vector<std::string>{});
-  std::shared_ptr<xla::TfrtCpuTopologyDescription> cpu_topology_ptr =
-      std::make_shared<xla::TfrtCpuTopologyDescription>(cpu_topology);
+  std::shared_ptr<xla::CpuTopologyDescription> cpu_topology_ptr =
+      std::make_shared<xla::CpuTopologyDescription>(cpu_topology);
 
   Tf2HloArg arg{
       .module = mlir_module.get(),
@@ -129,27 +135,21 @@ TEST(Tf2HloTest, Empty) {
       .topology = std::make_shared<xla::ifrt::PjRtTopology>(cpu_topology_ptr),
       .platform_name = xla::CpuName(),
   };
-  auto result = CompileTfToHlo(arg);
+  auto result = tf_to_hlo_compiler_.CompileTfToHlo(arg);
 
   TF_ASSERT_OK(result.status());
 }
 
 // Multiple input and multiple out.
-TEST(Tf2HloTest, Tuple) {
+TEST_F(Tf2HloTest, Tuple) {
   // Create test input module
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/tf2hlo_tuple.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
-      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, &context);
+      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, context_.get());
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -166,13 +166,13 @@ TEST(Tf2HloTest, Tuple) {
       GetCompileMetadata(mlir_module.get(), *client));
   TF_ASSERT_OK(UpdateCompileMetadata(compile_metadata, dtype_and_shapes));
 
-  xla::TfrtCpuTopologyDescription cpu_topology =
-      xla::TfrtCpuTopologyDescription::Create(
+  xla::CpuTopologyDescription cpu_topology =
+      xla::CpuTopologyDescription::Create(
           xla::CpuId(), xla::CpuName(), /*platform_version=*/"",
-          /*devices=*/std::vector<std::unique_ptr<xla::TfrtCpuDevice>>{},
+          /*devices=*/std::vector<std::unique_ptr<xla::PjRtDevice>>{},
           /*machine_attributes=*/std::vector<std::string>{});
-  std::shared_ptr<xla::TfrtCpuTopologyDescription> cpu_topology_ptr =
-      std::make_shared<xla::TfrtCpuTopologyDescription>(cpu_topology);
+  std::shared_ptr<xla::CpuTopologyDescription> cpu_topology_ptr =
+      std::make_shared<xla::CpuTopologyDescription>(cpu_topology);
 
   Tf2HloArg arg{
       .module = mlir_module.get(),
@@ -184,27 +184,21 @@ TEST(Tf2HloTest, Tuple) {
       .platform_name = xla::CpuName(),
   };
 
-  auto result = CompileTfToHlo(arg);
+  auto result = tf_to_hlo_compiler_.CompileTfToHlo(arg);
 
   TF_ASSERT_OK(result.status());
 }
 
 // Spmd and device assignment is given
-TEST(Tf2HloTest, Spmd) {
+TEST_F(Tf2HloTest, Spmd) {
   // Create test input module
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/tf2hlo_spmd_with_device_assignment.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
-      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, &context);
+      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, context_.get());
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -220,13 +214,13 @@ TEST(Tf2HloTest, Spmd) {
       GetCompileMetadata(mlir_module.get(), *client));
   TF_ASSERT_OK(UpdateCompileMetadata(compile_metadata, dtype_and_shapes));
 
-  xla::TfrtCpuTopologyDescription cpu_topology =
-      xla::TfrtCpuTopologyDescription::Create(
+  xla::CpuTopologyDescription cpu_topology =
+      xla::CpuTopologyDescription::Create(
           xla::CpuId(), xla::CpuName(), /*platform_version=*/"",
-          /*devices=*/std::vector<std::unique_ptr<xla::TfrtCpuDevice>>{},
+          /*devices=*/std::vector<std::unique_ptr<xla::PjRtDevice>>{},
           /*machine_attributes=*/std::vector<std::string>{});
-  std::shared_ptr<xla::TfrtCpuTopologyDescription> cpu_topology_ptr =
-      std::make_shared<xla::TfrtCpuTopologyDescription>(cpu_topology);
+  std::shared_ptr<xla::CpuTopologyDescription> cpu_topology_ptr =
+      std::make_shared<xla::CpuTopologyDescription>(cpu_topology);
 
   Tf2HloArg arg{
       .module = mlir_module.get(),
@@ -238,7 +232,7 @@ TEST(Tf2HloTest, Spmd) {
       .platform_name = xla::CpuName(),
   };
 
-  auto result = CompileTfToHlo(arg);
+  auto result = tf_to_hlo_compiler_.CompileTfToHlo(arg);
 
   LOG(INFO) << result->compile_metadata;
   TF_ASSERT_OK(result.status());
@@ -280,21 +274,15 @@ TEST(Tf2HloTest, Spmd) {
 }
 
 // Spmd and use default device assignment b/c no device assignment is given
-TEST(Tf2HloTest, UsingDefaultDeviceAssignment) {
+TEST_F(Tf2HloTest, UsingDefaultDeviceAssignment) {
   // Create test input module
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/tf2hlo_spmd_no_device_assignment.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
-      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, &context);
+      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, context_.get());
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -312,13 +300,13 @@ TEST(Tf2HloTest, UsingDefaultDeviceAssignment) {
       GetCompileMetadata(mlir_module.get(), *client));
   TF_ASSERT_OK(UpdateCompileMetadata(compile_metadata, dtype_and_shapes));
 
-  xla::TfrtCpuTopologyDescription cpu_topology =
-      xla::TfrtCpuTopologyDescription::Create(
+  xla::CpuTopologyDescription cpu_topology =
+      xla::CpuTopologyDescription::Create(
           xla::CpuId(), xla::CpuName(), /*platform_version=*/"",
-          /*devices=*/std::vector<std::unique_ptr<xla::TfrtCpuDevice>>{},
+          /*devices=*/std::vector<std::unique_ptr<xla::PjRtDevice>>{},
           /*machine_attributes=*/std::vector<std::string>{});
-  std::shared_ptr<xla::TfrtCpuTopologyDescription> cpu_topology_ptr =
-      std::make_shared<xla::TfrtCpuTopologyDescription>(cpu_topology);
+  std::shared_ptr<xla::CpuTopologyDescription> cpu_topology_ptr =
+      std::make_shared<xla::CpuTopologyDescription>(cpu_topology);
 
   Tf2HloArg arg{
       .module = mlir_module.get(),
@@ -330,7 +318,7 @@ TEST(Tf2HloTest, UsingDefaultDeviceAssignment) {
       .platform_name = xla::CpuName(),
   };
 
-  auto result = CompileTfToHlo(arg);
+  auto result = tf_to_hlo_compiler_.CompileTfToHlo(arg);
 
   LOG(INFO) << result->compile_metadata;
   TF_ASSERT_OK(result.status());
@@ -397,22 +385,16 @@ TEST(Tf2HloTest, UsingDefaultDeviceAssignment) {
 }
 
 // Multiple input and multiple out.
-TEST(Tf2HloTest, XlaCallHostCallback) {
+TEST_F(Tf2HloTest, XlaCallHostCallback) {
   // Create test input module
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/xla_call_host_callback.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
       mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path,
-                                            mlir::ParserConfig(&context));
+                                            mlir::ParserConfig(context_.get()));
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -429,13 +411,13 @@ TEST(Tf2HloTest, XlaCallHostCallback) {
       GetCompileMetadata(mlir_module.get(), *client));
   TF_ASSERT_OK(UpdateCompileMetadata(compile_metadata, dtype_and_shapes));
 
-  xla::TfrtCpuTopologyDescription cpu_topology =
-      xla::TfrtCpuTopologyDescription::Create(
+  xla::CpuTopologyDescription cpu_topology =
+      xla::CpuTopologyDescription::Create(
           xla::CpuId(), xla::CpuName(), /*platform_version=*/"",
-          /*devices=*/std::vector<std::unique_ptr<xla::TfrtCpuDevice>>{},
+          /*devices=*/std::vector<std::unique_ptr<xla::PjRtDevice>>{},
           /*machine_attributes=*/std::vector<std::string>{});
-  std::shared_ptr<xla::TfrtCpuTopologyDescription> cpu_topology_ptr =
-      std::make_shared<xla::TfrtCpuTopologyDescription>(cpu_topology);
+  std::shared_ptr<xla::CpuTopologyDescription> cpu_topology_ptr =
+      std::make_shared<xla::CpuTopologyDescription>(cpu_topology);
 
   Tf2HloArg arg{
       .module = mlir_module.get(),
@@ -447,7 +429,7 @@ TEST(Tf2HloTest, XlaCallHostCallback) {
       .platform_name = xla::CpuName(),
   };
 
-  auto result = CompileTfToHlo(arg);
+  auto result = tf_to_hlo_compiler_.CompileTfToHlo(arg);
 
   TF_ASSERT_OK(result.status());
 
@@ -460,21 +442,15 @@ TEST(Tf2HloTest, XlaCallHostCallback) {
 
 // On GPU enabled build, the compilation should pass. On a GPU disabled build,
 // the compilation should fail with a correct error message.
-TEST(Tf2HloTest, GpuCompile) {
+TEST_F(Tf2HloTest, GpuCompile) {
   // Create test input module
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/tf2hlo_gpu.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
-      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, &context);
+      mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path, context_.get());
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -505,7 +481,7 @@ TEST(Tf2HloTest, GpuCompile) {
       .platform_name = xla::CudaName(),
   };
 
-  auto result = CompileTfToHlo(arg);
+  auto result = tf_to_hlo_compiler_.CompileTfToHlo(arg);
 #if defined(GOOGLE_CUDA)
   LOG(INFO) << "GPU compile success";
   EXPECT_OK(result);
@@ -516,21 +492,15 @@ TEST(Tf2HloTest, GpuCompile) {
 #endif
 }
 
-TEST(Tf2HloTest, SameArgProduceSameKeyFingerprint) {
+TEST_F(Tf2HloTest, SameArgProduceSameKeyFingerprint) {
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/xla_call_host_callback.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
       mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path,
-                                            mlir::ParserConfig(&context));
+                                            mlir::ParserConfig(context_.get()));
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -547,13 +517,13 @@ TEST(Tf2HloTest, SameArgProduceSameKeyFingerprint) {
       GetCompileMetadata(mlir_module.get(), *client));
   TF_ASSERT_OK(UpdateCompileMetadata(compile_metadata, dtype_and_shapes));
 
-  xla::TfrtCpuTopologyDescription cpu_topology =
-      xla::TfrtCpuTopologyDescription::Create(
+  xla::CpuTopologyDescription cpu_topology =
+      xla::CpuTopologyDescription::Create(
           xla::CpuId(), xla::CpuName(), /*platform_version=*/"",
-          /*devices=*/std::vector<std::unique_ptr<xla::TfrtCpuDevice>>{},
+          /*devices=*/std::vector<std::unique_ptr<xla::PjRtDevice>>{},
           /*machine_attributes=*/std::vector<std::string>{});
-  std::shared_ptr<xla::TfrtCpuTopologyDescription> cpu_topology_ptr =
-      std::make_shared<xla::TfrtCpuTopologyDescription>(cpu_topology);
+  std::shared_ptr<xla::CpuTopologyDescription> cpu_topology_ptr =
+      std::make_shared<xla::CpuTopologyDescription>(cpu_topology);
 
   Tf2HloArg arg0{
       .module = mlir_module.get(),
@@ -574,24 +544,22 @@ TEST(Tf2HloTest, SameArgProduceSameKeyFingerprint) {
       .topology = std::make_shared<xla::ifrt::PjRtTopology>(cpu_topology_ptr),
   };
 
-  EXPECT_THAT(arg0.Key(), IsOkAndHolds(arg1.Key().value()));
+  TfToHloCompiler tf_to_hlo_compiler;
+  TF_ASSERT_OK_AND_ASSIGN(std::string key0, tf_to_hlo_compiler.Key(arg0));
+  TF_ASSERT_OK_AND_ASSIGN(std::string key1, tf_to_hlo_compiler.Key(arg1));
+
+  EXPECT_THAT(key0, Eq(key1));
 }
 
-TEST(Tf2HloTest, DifferentCompileMetadataProduceDifferentKeyFingerprint) {
+TEST_F(Tf2HloTest, DifferentCompileMetadataProduceDifferentKeyFingerprint) {
   constexpr absl::string_view kDataDirectory =
       "tensorflow/compiler/mlir/tfrt/transforms/ifrt/testdata";
   std::string mlir_module_path = tensorflow::GetDataDependencyFilepath(
       absl::StrCat(kDataDirectory, "/xla_call_host_callback.mlir"));
 
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  mlir::RegisterAllTensorFlowDialects(registry);
-
-  mlir::MLIRContext context(registry);
-
   mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
       mlir::parseSourceFile<mlir::ModuleOp>(mlir_module_path,
-                                            mlir::ParserConfig(&context));
+                                            mlir::ParserConfig(context_.get()));
 
   ASSERT_TRUE(mlir_module);
   ASSERT_TRUE(mlir_module.get() != nullptr);
@@ -608,13 +576,13 @@ TEST(Tf2HloTest, DifferentCompileMetadataProduceDifferentKeyFingerprint) {
       GetCompileMetadata(mlir_module.get(), *client));
   TF_ASSERT_OK(UpdateCompileMetadata(compile_metadata, dtype_and_shapes));
 
-  xla::TfrtCpuTopologyDescription cpu_topology =
-      xla::TfrtCpuTopologyDescription::Create(
+  xla::CpuTopologyDescription cpu_topology =
+      xla::CpuTopologyDescription::Create(
           xla::CpuId(), xla::CpuName(), /*platform_version=*/"",
-          /*devices=*/std::vector<std::unique_ptr<xla::TfrtCpuDevice>>{},
+          /*devices=*/std::vector<std::unique_ptr<xla::PjRtDevice>>{},
           /*machine_attributes=*/std::vector<std::string>{});
-  std::shared_ptr<xla::TfrtCpuTopologyDescription> cpu_topology_ptr =
-      std::make_shared<xla::TfrtCpuTopologyDescription>(cpu_topology);
+  std::shared_ptr<xla::CpuTopologyDescription> cpu_topology_ptr =
+      std::make_shared<xla::CpuTopologyDescription>(cpu_topology);
 
   Tf2HloArg arg0{
       .module = mlir_module.get(),
@@ -636,9 +604,11 @@ TEST(Tf2HloTest, DifferentCompileMetadataProduceDifferentKeyFingerprint) {
       .topology = std::make_shared<xla::ifrt::PjRtTopology>(cpu_topology_ptr),
   };
 
-  ASSERT_OK_AND_ASSIGN(std::string key0, arg0.Key());
-  ASSERT_OK_AND_ASSIGN(std::string key1, arg1.Key());
-  EXPECT_NE(key0, key1);
+  TfToHloCompiler tf_to_hlo_compiler;
+
+  TF_ASSERT_OK_AND_ASSIGN(std::string key0, tf_to_hlo_compiler.Key(arg0));
+  TF_ASSERT_OK_AND_ASSIGN(std::string key1, tf_to_hlo_compiler.Key(arg1));
+  EXPECT_THAT(key0, Ne(key1));
 }
 
 }  // namespace
