@@ -54,11 +54,11 @@ load(
     "cc_test",
 )
 load(
-    "//third_party/compute_library:build_defs.bzl",
+    "@local_xla//third_party/compute_library:build_defs.bzl",
     "if_enable_acl",
 )
 load(
-    "//third_party/llvm_openmp:openmp.bzl",
+    "@local_xla//third_party/llvm_openmp:openmp.bzl",
     "windows_llvm_openmp_linkopts",
 )
 load(
@@ -1590,7 +1590,7 @@ def tf_cc_test(
                 "-lpthread",
                 "-lm",
             ],
-            clean_dep("//third_party/compute_library:build_with_acl"): [
+            clean_dep("@local_xla//third_party/compute_library:build_with_acl"): [
                 "-fopenmp",
                 "-lm",
             ],
@@ -1633,7 +1633,7 @@ def tf_cc_shared_test(
                 "-lpthread",
                 "-lm",
             ],
-            clean_dep("//third_party/compute_library:build_with_acl"): [
+            clean_dep("@local_xla//third_party/compute_library:build_with_acl"): [
                 "-fopenmp",
                 "-lm",
             ],
@@ -2454,7 +2454,7 @@ def pywrap_tensorflow_macro_opensource(
     """Builds the pywrap_tensorflow_internal shared object."""
 
     if use_pywrap_rules():
-        native.py_library(
+        _plain_py_library(
             name = name,
             srcs = [],
             deps = [],

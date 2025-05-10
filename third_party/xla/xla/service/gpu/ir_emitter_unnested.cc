@@ -63,6 +63,7 @@ limitations under the License.
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
@@ -88,18 +89,21 @@ limitations under the License.
 #include "xla/mlir_hlo/transforms/gpu_passes.h"
 #include "xla/primitive_util.h"
 #include "xla/service/buffer_assignment.h"
+#include "xla/service/call_graph.h"
 #include "xla/service/collective_ops_utils.h"
 #include "xla/service/custom_call_status.h"
 #include "xla/service/custom_call_target_registry.h"
 #include "xla/service/global_device_id.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/cublas_cudnn.h"
+#include "xla/stream_executor/cuda/cuda_compute_capability.h"
 #ifdef GOOGLE_CUDA
 #include "xla/stream_executor/cuda/cuda_solver_context.h"
 #endif  // GOOGLE_CUDA
 #include "xla/backends/gpu/codegen/fusion_emitter.h"
 #include "xla/backends/gpu/codegen/fusions.h"
 #include "xla/backends/gpu/codegen/triton/fusion_emitter.h"
+#include "xla/backends/gpu/runtime/topk.h"
 #include "xla/service/gpu/execution_stream_assignment.h"
 #include "xla/service/gpu/gpu_conv_runner.h"
 #include "xla/service/gpu/gpu_norm_runner.h"
@@ -111,7 +115,6 @@ limitations under the License.
 #include "xla/service/gpu/kernel_arguments.h"
 #include "xla/service/gpu/kernel_reuse_cache.h"
 #include "xla/service/gpu/kernels/custom_kernel.h"
-#include "xla/service/gpu/kernels/topk_custom_kernel.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/model/tiled_hlo_computation.h"
@@ -215,17 +218,6 @@ absl::Status IrEmitterUnnested::EmitConstant(
   return absl::OkStatus();
 }
 
-static ConditionalThunkConfig GetConditionalThunkConfig(
-    const HloInstruction* instr,
-    std::vector<std::unique_ptr<SequentialThunk>> branch_thunk_sequences) {
-  ConditionalThunkConfig config;
-  config.branch_index_is_bool =
-      instr->operand(0)->shape().element_type() == PRED;
-  config.branch_count = instr->branch_count();
-  config.branch_thunks = std::move(branch_thunk_sequences);
-  return config;
-}
-
 absl::Status IrEmitterUnnested::EmitConditional(const HloInstruction* instr) {
   std::vector<std::unique_ptr<SequentialThunk>> branch_thunks;
   branch_thunks.reserve(instr->branch_count());
@@ -241,14 +233,12 @@ absl::Status IrEmitterUnnested::EmitConditional(const HloInstruction* instr) {
         ir_emitter->ConsumeThunkSequence(branch_thunk_info));
   }
 
-  ConditionalThunkConfig config =
-      GetConditionalThunkConfig(instr, std::move(branch_thunks));
-
   TF_ASSIGN_OR_RETURN(auto slice,
                       GetAllocationSliceForHlo(instr->operand(0), {}));
-  AddThunkToThunkSequence(std::unique_ptr<Thunk>(
-      new ConditionalThunk(Thunk::ThunkInfo::WithProfileAnnotation(instr),
-                           std::move(config), slice)));
+  bool branch_index_is_bool = instr->operand(0)->shape().element_type() == PRED;
+  AddThunkToThunkSequence(std::unique_ptr<Thunk>(new ConditionalThunk(
+      Thunk::ThunkInfo::WithProfileAnnotation(instr), slice,
+      std::move(branch_thunks), branch_index_is_bool)));
   return absl::OkStatus();
 }
 
@@ -1019,7 +1009,8 @@ absl::Status IrEmitterUnnested::EmitCubDeviceRadixSort(
           : std::nullopt,
       operands, results, scratch, options.descending(),
       Product(operand_shape.dimensions()) /
-          operand_shape.dimensions(operand_shape.dimensions().size() - 1));
+          operand_shape.dimensions(operand_shape.dimensions().size() - 1),
+      ir_emitter_context_->platform_name());
   AddThunkToThunkSequence(std::move(thunk));
   return absl::OkStatus();
 }
@@ -1159,6 +1150,15 @@ absl::Status IrEmitterUnnested::EmitCustomCallThunk(
   // xla/g3doc/custom_call.md.
   switch (instr->api_version()) {
     case CustomCallApiVersion::API_VERSION_ORIGINAL:
+#ifdef PLATFORM_GOOGLE
+      LOG(FATAL)
+#else
+      LOG(ERROR)
+#endif
+          << "Custom call API version `API_VERSION_ORIGINAL` is not supported "
+             "by XLA:GPU. Prefer https://docs.jax.dev/en/latest/ffi.html. It "
+             "will be fully removed in November 2025.";
+
       custom_call_target = [call_target](stream_executor::Stream* stream,
                                          void** buffers, const char* opaque,
                                          size_t opaque_len,
@@ -1358,10 +1358,14 @@ absl::Status IrEmitterUnnested::EmitTopKCustomCall(
           : std::tuple<size_t, size_t, size_t>{
                 1, data_shape.dimensions(0), top_elements_shape.dimensions(0)};
 
+  auto wavefront_size =
+      ir_emitter_context_->gpu_device_info().threads_per_warp();
+
   // Load TopK custom kernel.
-  TF_ASSIGN_OR_RETURN(CustomKernel kernel,
-                      kernel::topk::GetTopKKernel(
-                          "topk", data_shape.element_type(), n, k, batch_size));
+  TF_ASSIGN_OR_RETURN(
+      CustomKernel kernel,
+      kernel::topk::GetTopKKernel("topk", data_shape.element_type(), n, k,
+                                  batch_size, platform_name(), wavefront_size));
 
   // Prepare kernel arguments.
   TF_ASSIGN_OR_RETURN(

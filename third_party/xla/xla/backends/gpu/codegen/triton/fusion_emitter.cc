@@ -1507,13 +1507,9 @@ absl::StatusOr<SmallVector<Value>> EmitGeneric(
         << "Unexpected scalar encountered. Expected padded_tile_sizes() to be "
            "non-empty.";
 
-    insert_results.push_back(
-        b.create<mtx::InsertOp>(
-             mlir::RankedTensorType::get(tile_info.original_shape(),
-                                         result_storage_type),
-             result.UnwrapTensor(), parent_base_ptr, tile_info.offsets(),
-             tile_info.tile_strides(), tile_info.minor_to_major_layout())
-            .getResult());
+    insert_results.push_back(b.create<mtx::InsertOp>(
+        result.UnwrapTensor(), parent_base_ptr, tile_info.offsets(),
+        tile_info.tile_strides(), tile_info.minor_to_major_layout()));
   }
 
   return insert_results;
@@ -1971,8 +1967,6 @@ absl::StatusOr<TritonWrapperResult> CompileTritonToLLVM(
     }
 
     // Integrate LLVM matmul kernel into XLA's LLVM module.
-    // TODO(goncharov): remove once we integrated past LLVM
-    // 6c2e170d043d3a7d7b32635e887cfd255ef5c2ce that removes nvvm.annotations.
     auto* nvvm_annotations =
         ll_triton_module->getNamedMetadata("nvvm.annotations");
     if (nvvm_annotations) {

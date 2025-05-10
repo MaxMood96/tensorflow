@@ -22,11 +22,14 @@ limitations under the License.
 #include <ostream>
 #include <string>
 
+#include "absl/base/macros.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "xla/printer.h"
+#include "xla/status_macros.h"
 #include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
@@ -44,8 +47,14 @@ class Tile {
       : dimensions_(dimensions.begin(), dimensions.end()) {}
 
   // De/Serialize a Tile to and from a TileProto.
-  static Tile CreateFromProto(const TileProto& tile_proto) {
-    return Tile(tile_proto.dimensions());
+  static absl::StatusOr<Tile> FromProto(const TileProto& tile_proto) {
+    Tile tile;
+    tile.dimensions_.reserve(tile_proto.dimensions_size());
+    for (int64_t dimension : tile_proto.dimensions()) {
+      TF_RET_CHECK(dimension >= 0);
+      tile.add_dimensions(dimension);
+    }
+    return tile;
   }
   TileProto ToProto() const;
 
@@ -138,7 +147,8 @@ class SplitConfig {
   // Returns the indices where splits occur.
   absl::Span<const int64_t> split_indices() const { return split_indices_; }
   int64_t split_indices(int64_t idx) const { return split_indices_.at(idx); }
-  int64_t split_indices_size() const { return split_indices_.size(); }
+  ABSL_DEPRECATE_AND_INLINE()
+  int64_t split_indices_size() const { return split_indices().size(); }
   SplitConfig& add_split_indices(int64_t split_index) {
     split_indices_.push_back(split_index);
     return *this;
@@ -170,31 +180,32 @@ class Layout {
   // Constructs a dense layout with the given minor-to-major order.
   explicit Layout(absl::Span<const int64_t> minor_to_major);
 
-  explicit Layout(absl::Span<const int64_t> minor_to_major,
-                  absl::Span<const Tile> tiles, int64_t element_size_in_bits);
+  Layout(absl::Span<const int64_t> minor_to_major, absl::Span<const Tile> tiles,
+         int64_t element_size_in_bits);
 
   // Constructs a dense tiled layout with the given minor-to-major order, dim
   // level types, and tiles.
-  explicit Layout(absl::Span<const int64_t> minor_to_major,
-                  absl::Span<const DimLevelType> dim_level_types,
-                  absl::Span<const bool> dim_unique,
-                  absl::Span<const bool> dim_ordered,
-                  absl::Span<const Tile> tiles,
-                  int64_t tail_padding_alignment_in_elements = 1,
-                  PrimitiveType index_primitive_type = PRIMITIVE_TYPE_INVALID,
-                  PrimitiveType element_primitive_type = PRIMITIVE_TYPE_INVALID,
-                  int64_t element_size_in_bits = 0, int64_t memory_space = 0,
-                  absl::Span<const SplitConfig> split_configs = {},
-                  std::unique_ptr<Shape> physical_shape = nullptr,
-                  int64_t dynamic_shape_metadata_prefix_bytes = 0);
+  Layout(absl::Span<const int64_t> minor_to_major,
+         absl::Span<const DimLevelType> dim_level_types,
+         absl::Span<const Tile> tiles,
+         int64_t tail_padding_alignment_in_elements = 1,
+         PrimitiveType index_primitive_type = PRIMITIVE_TYPE_INVALID,
+         PrimitiveType element_primitive_type = PRIMITIVE_TYPE_INVALID,
+         int64_t element_size_in_bits = 0, int64_t memory_space = 0,
+         absl::Span<const SplitConfig> split_configs = {},
+         std::unique_ptr<Shape> physical_shape = nullptr,
+         int64_t dynamic_shape_metadata_prefix_bytes = 0);
 
   Layout& operator=(const Layout& other);
   Layout& operator=(Layout&& other);
 
-  // Creates a Layout from a LayoutProto. If the proto has logically invalid
-  // fields, this will return a Layout that will fail to validate, but will not
-  // crash.
-  static Layout CreateFromProto(const LayoutProto& proto);
+  // Creates a Layout from a LayoutProto.
+  static absl::StatusOr<Layout> FromProto(const LayoutProto& proto);
+
+  ABSL_DEPRECATED("Use FromProto instead.")
+  static Layout CreateFromProto(const LayoutProto& proto) {
+    return FromProto(proto).value();
+  }
 
   // Returns a LayoutProto representation of the Layout.
   LayoutProto ToProto() const;
@@ -209,17 +220,15 @@ class Layout {
   //               property is ommitted if it is the default):
   //     D(...): Comma-separated list of attributes for each dimension. Each
   //             attribute is a single character abbreviation of the dimension
-  //             level type, followed by a '+' if the dimension is not
-  //             unique, and a '~' if the dimension is unordered. The
-  //             abbreviations can be:
+  //             level type
+  //            The  abbreviations can be:
   //               D: DIM_DENSE
   //               C: DIM_COMPRESSED
   //               S: DIM_SINGLETON
   //               H: DIM_LOOSE_COMPRESSED
   //             E.g.
-  //               D(D,C+~): dimension 0 is dense.
-  //                         dimension 1 is compressed, not unique, and
-  //                         unordered.
+  //               D(D,C): dimension 0 is dense.
+  //                       dimension 1 is compressed.
   //             If omitted, all dimensions are dense.
   //     T(...)...(...): The tiling (each (...) is acomma-separated list of
   //                     tile bound sizes). E.g.
@@ -351,42 +360,9 @@ class Layout {
     return *this;
   }
 
-  // Methods for accessing the dim_unique array.
-  int dim_unique_size() const { return n_dim_unique_; }
-  bool dim_unique(int index) const { return dim_attributes_[index].dim_unique; }
-  Layout& set_dim_unique(int index, bool unique) {
-    dim_attributes_[index].dim_unique = unique;
-    return *this;
-  }
-  Layout& add_dim_unique(bool unique) {
-    while (n_dim_unique_ >= dim_attributes_.size()) {
-      dim_attributes_.push_back(DimInfo());
-    }
-    dim_attributes_[n_dim_unique_].dim_unique = unique;
-    n_dim_unique_++;
-    return *this;
-  }
-
-  // Methods for accessing the dim_ordered array.
-  int dim_ordered_size() const { return n_dim_ordered_; }
-  bool dim_ordered(int index) const {
-    return dim_attributes_[index].dim_ordered;
-  }
-  Layout& set_dim_ordered(int index, bool ordered) {
-    dim_attributes_[index].dim_ordered = ordered;
-    return *this;
-  }
-  Layout& add_dim_ordered(bool ordered) {
-    while (n_dim_ordered_ >= dim_attributes_.size()) {
-      dim_attributes_.push_back(DimInfo());
-    }
-    dim_attributes_[n_dim_ordered_].dim_ordered = ordered;
-    n_dim_ordered_++;
-    return *this;
-  }
-
   // Methods for accessing the minor-to-major array.
-  int minor_to_major_size() const { return minor_to_major_.size(); }
+  ABSL_DEPRECATE_AND_INLINE()
+  int minor_to_major_size() const { return minor_to_major().size(); }
   int64_t minor_to_major(int index) const { return minor_to_major_[index]; }
   Layout& set_minor_to_major(int index, int64_t value) {
     minor_to_major_[index] = value;
@@ -405,14 +381,15 @@ class Layout {
   DimensionVector* mutable_minor_to_major() { return &minor_to_major_; }
 
   // Removes the given dimension from 'minor_to_major_', and adjusts the other
-  // dimensions accordingly. Also adjusts 'dim_level_types_', 'dim_ordered_' and
-  // 'dim_unique_' in case it is a sparse layout.
+  // dimensions accordingly. Also adjusts 'dim_level_types_'
+  // in case it is a sparse layout.
   //
   // Precondition: dim_to_delete is in the range [0, minor_to_major_size()).
   Layout& DeleteDimension(int dim_to_delete);
 
   // Methods for accessing the tile field.
-  int64_t tiles_size() const { return tiles_.size(); }
+  ABSL_DEPRECATE_AND_INLINE()
+  int64_t tiles_size() const { return tiles().size(); }
   const Tile& tiles(int index) const { return tiles_[index]; }
   Tile* mutable_tiles(int index) { return &tiles_[index]; }
   Tile* add_tiles() {
@@ -436,10 +413,9 @@ class Layout {
     return tail_padding_alignment_in_elements_;
   }
 
-  // Sets the tail_padding_alignment_in_elements value. If the value is less
-  // than 1, it will log a fatal error.
   Layout& set_tail_padding_alignment_in_elements(int64_t value) {
-    set_tail_padding_alignment_in_elements(value, ActionOnError::kCheckFail);
+    CHECK_GE(value, 1);
+    tail_padding_alignment_in_elements_ = value;
     return *this;
   }
 
@@ -466,7 +442,8 @@ class Layout {
     return *this;
   }
 
-  int split_configs_size() const { return split_configs_.size(); }
+  ABSL_DEPRECATE_AND_INLINE()
+  int split_configs_size() const { return split_configs().size(); }
   const SplitConfig& split_configs(int index) const {
     return split_configs_.at(index);
   }
@@ -513,12 +490,6 @@ class Layout {
   }
 
  private:
-  // What to do if a method encounters an error.
-  enum class ActionOnError {
-    kCheckFail,
-    kWarning,
-  };
-
   // We store a single inlined vector to hold
   struct DimInfo {
     DimInfo()
@@ -529,28 +500,9 @@ class Layout {
     bool dim_ordered : 1;
   };
 
-  // Sets the tail_padding_alignment_in_elements value. If the value is less
-  // than 1, it will log a warning or fatal error depending on the error action.
-  void set_tail_padding_alignment_in_elements(
-      const int64_t value, const ActionOnError error_action) {
-    if (value < 1) {
-      const std::string error_message = absl::StrCat(
-          "tail_padding_alignment_in_elements must be >= 1. Actual value: ",
-          value);
-      if (error_action == ActionOnError::kCheckFail) {
-        LOG(FATAL) << error_message;
-      } else {
-        LOG(WARNING) << error_message;
-      }
-    }
-    tail_padding_alignment_in_elements_ = value;
-  }
-
   absl::InlinedVector<DimInfo, InlineRank()> dim_attributes_;
 
   uint8_t n_dim_level_types_ = 0;
-  uint8_t n_dim_unique_ = 0;
-  uint8_t n_dim_ordered_ = 0;
 
   // The primitive type to use for sparse array indices and pointers.  Each of
   // these must either be INVALID, or an unsigned integer type.

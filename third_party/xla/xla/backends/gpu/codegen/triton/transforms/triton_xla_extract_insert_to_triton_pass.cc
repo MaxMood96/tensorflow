@@ -13,8 +13,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <stdbool.h>
-
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -73,14 +71,6 @@ namespace {
 PointerType GetTensorPtrType(Type type) {
   return PointerType::get(xgt::StorageType(type),
                           mlir::NVVM::kGlobalMemorySpace);
-}
-
-PointerType GetTensorPtrTypeForTma(::xla::EmitterLocOpBuilder& builder) {
-  // Triton frontend is passing zero in the address space. This doesn't map to
-  // anything meaningful in NVVM dialect. Setting it to be consistent with
-  // Triton.
-  return PointerType::get(xgt::StorageType(builder.getI8Type()),
-                          /*addrspace=*/0);
 }
 
 bool AreRankedTensors(ArrayRef<Type> types) {
@@ -302,22 +292,6 @@ Value CreateMakeTensorPtrOp(::xla::EmitterLocOpBuilder& builder, Value ptr,
       .getResult();
 }
 
-Value CreateReinterpretTensorDescOp(
-    ::xla::EmitterLocOpBuilder& builder,
-    const TypedValue<RankedTensorType>& tensor_arg,
-    RankedTensorType result_type) {
-  // tensor -> !tt.ptr<i8, 0>
-  auto cast_to_tensor_ptr_type =
-      builder
-          .create<mlir::UnrealizedConversionCastOp>(
-              GetTensorPtrTypeForTma(builder), tensor_arg)
-          .getResult(0);
-
-  return builder.create<mlir::triton::ReinterpretTensorDescOp>(
-      mlir::triton::TensorDescType::get(builder.getContext(), result_type),
-      cast_to_tensor_ptr_type);
-}
-
 class RewriteFuncOp : public mlir::OpRewritePattern<func::FuncOp> {
  public:
   using OpRewritePattern::OpRewritePattern;
@@ -339,19 +313,22 @@ class RewriteFuncOp : public mlir::OpRewritePattern<func::FuncOp> {
     SmallVector<Type> new_operand_types(input_types);
     for (auto&& [index, operand_type] : llvm::enumerate(new_operand_types)) {
       mlir::BlockArgument func_arg = op.getArgument(index);
+      auto element_type = mlir::cast<TensorType>(operand_type).getElementType();
 
       mlir::UnrealizedConversionCastOp cast_to_orig_type;
-      if (op.getArgAttr(index, "tt.nv_tma_desc")) {
-        operand_type = GetTensorPtrTypeForTma(builder);
-        // !tt.ptr<i8, 0> -> tensor
+      if (auto attr = op.getArgAttr(index, "tt.tma_descriptor")) {
+        auto block_shape = mlir::cast<TmaDescriptorAttr>(attr).getBlockShape();
+        operand_type = TensorDescType::get(
+            builder.getContext(),
+            RankedTensorType::get(block_shape, element_type));
+        // !tt.tensordesc<tensor<block_shape x element_type>> -> tensor
         cast_to_orig_type = builder.create<mlir::UnrealizedConversionCastOp>(
             operand_type, func_arg);
       } else {
         // !tt.ptr<> -> tensor
         cast_to_orig_type = builder.create<mlir::UnrealizedConversionCastOp>(
             operand_type, func_arg);
-        operand_type = GetTensorPtrType(
-            mlir::cast<TensorType>(operand_type).getElementType());
+        operand_type = GetTensorPtrType(element_type);
       }
       func_arg.replaceAllUsesExcept(cast_to_orig_type.getResult(0),
                                     cast_to_orig_type);
@@ -379,8 +356,8 @@ class RewriteFuncOp : public mlir::OpRewritePattern<func::FuncOp> {
 
     // Currently not propagating any function attributes to the new function.
     ArrayRef<NamedAttribute> attrs;
-    auto new_func = rewriter.create<triton::FuncOp>(
-        op.getLoc(), op.getName(), new_function_type, attrs, arg_attrs);
+    auto new_func = builder.create<triton::FuncOp>(
+        op.getName(), new_function_type, attrs, arg_attrs);
 
     for (int i = 0; i < new_func.getNumArguments(); ++i) {
       // TMA arguments don't require tt.divisibility.
@@ -420,49 +397,50 @@ class RewriteExtract : public mlir::OpRewritePattern<ExtractOp> {
   // Offsets are resolved in tt.addptr.
   //
   // With TMA:
-  // tt.reinterpret_tensor_desc + tt.descriptor_load.
+  // tt.descriptor_load.
   // Offsets are resolved in tt.descriptor_load.
   mlir::LogicalResult matchAndRewrite(
       ExtractOp op, mlir::PatternRewriter& rewriter) const override {
     ::xla::EmitterLocOpBuilder builder(op.getLoc(), rewriter);
-    auto original_shape = op.getSrc().getType().getShape();
-    auto tile_shape = op.getResult().getType().getShape();
+    RankedTensorType original_type = op.getSrcType();
+    RankedTensorType tile_type = op.getResultType();
+    ArrayRef<int64_t> original_shape = original_type.getShape();
+    ArrayRef<int64_t> tile_shape = tile_type.getShape();
 
+    auto offsets = op.getOffsetsAsValues(builder);
     if (CanUseTMA(builder, tma_enabled_, *device_description_, tile_shape,
                   op.getSrc())) {
       AddTmaAttributes(builder, op.getSrc(), tile_shape);
 
-      auto reinterpret_tensor_desc = CreateReinterpretTensorDescOp(
-          builder, op.getSrc(), op.getResult().getType());
-
-      auto descriptor_load =
+      // tensor -> !tt.tensordesc<tile_type>
+      auto cast_to_tensor_desc =
           builder
-              .create<DescriptorLoadOp>(
-                  op.getResult().getType(), reinterpret_tensor_desc,
-                  IndexCastUI(builder, builder.getI32Type(), op.getOffsets()))
-              .getResult();
+              .create<mlir::UnrealizedConversionCastOp>(
+                  TensorDescType::get(builder.getContext(), tile_type),
+                  op.getSrc())
+              .getResult(0);
+
+      auto descriptor_load = builder.create<DescriptorLoadOp>(
+          op.getResultType(), cast_to_tensor_desc,
+          IndexCastUI(builder, builder.getI32Type(), offsets));
 
       rewriter.replaceOp(op, descriptor_load);
       return mlir::success();
     }
 
-    auto ptr =
-        CreateAddPtrOp(builder, op.getSrc(), op.getOffsets(), op.getLayout());
-    ptr =
-        CreateMakeTensorPtrOp(builder, ptr, original_shape, tile_shape,
-                              op.getOffsets(), op.getStrides(), op.getLayout());
-
+    auto ptr = CreateAddPtrOp(builder, op.getSrc(), offsets, op.getLayout());
+    auto strides = op.getStridesAsValues(builder);
+    ptr = CreateMakeTensorPtrOp(builder, ptr, original_shape, tile_shape,
+                                offsets, strides, op.getLayout());
     auto boundary_checks = ComputeBoundaryChecks(original_shape, tile_shape);
     std::optional<PaddingOption> padding;
     if (!boundary_checks.empty()) {
       padding = PaddingOption::PAD_ZERO;
     }
-    auto load = builder
-                    .create<LoadOp>(ptr, boundary_checks, padding,
-                                    CacheModifier::NONE, EvictionPolicy::NORMAL,
-                                    /*isVolatile=*/false)
-                    .getResult();
-
+    auto load =
+        builder.create<LoadOp>(ptr, boundary_checks, padding,
+                               CacheModifier::NONE, EvictionPolicy::NORMAL,
+                               /*isVolatile=*/false);
     rewriter.replaceOp(op, load);
     return mlir::success();
   }
@@ -487,40 +465,43 @@ class RewriteInsert : public mlir::OpRewritePattern<InsertOp> {
   // Offsets are resolved in tt.addptr.
   //
   // With TMA:
-  // tt.reinterpret_tensor_desc + tt.descriptor_store.
+  // tt.descriptor_store.
   // Offsets are resolved in tt.descriptor_store.
   mlir::LogicalResult matchAndRewrite(
       InsertOp op, mlir::PatternRewriter& rewriter) const override {
     ::xla::EmitterLocOpBuilder builder(op.getLoc(), rewriter);
-    auto original_shape = op.getDst().getType().getShape();
-    auto tile_shape = op.getSrc().getType().getShape();
+    RankedTensorType original_type = op.getResultType();
+    RankedTensorType tile_type = op.getSrcType();
+    ArrayRef<int64_t> original_shape = original_type.getShape();
+    ArrayRef<int64_t> tile_shape = tile_type.getShape();
 
+    auto offsets = op.getOffsetsAsValues(builder);
     if (CanUseTMA(builder, tma_enabled_, *device_description_, tile_shape,
                   op.getDst())) {
       AddTmaAttributes(builder, op.getDst(), tile_shape);
 
-      auto reinterpret_tensor_desc = CreateReinterpretTensorDescOp(
-          builder, op.getDst(), op.getSrc().getType());
+      // tensor -> !tt.tensordesc<tile_type>
+      auto cast_to_tensor_desc =
+          builder
+              .create<mlir::UnrealizedConversionCastOp>(
+                  TensorDescType::get(builder.getContext(), tile_type),
+                  op.getDst())
+              .getResult(0);
 
       builder.create<DescriptorStoreOp>(
-          reinterpret_tensor_desc, op.getSrc(),
-          IndexCastUI(builder, builder.getI32Type(), op.getOffsets()));
+          cast_to_tensor_desc, op.getSrc(),
+          IndexCastUI(builder, builder.getI32Type(), offsets));
     } else {
-      auto ptr =
-          CreateAddPtrOp(builder, op.getDst(), op.getOffsets(), op.getLayout());
+      auto ptr = CreateAddPtrOp(builder, op.getDst(), offsets, op.getLayout());
+      auto strides = op.getStridesAsValues(builder);
       ptr = CreateMakeTensorPtrOp(builder, ptr, original_shape, tile_shape,
-                                  op.getOffsets(), op.getStrides(),
-                                  op.getLayout());
-
-      rewriter.create<StoreOp>(
-          op->getLoc(), ptr, op.getSrc(),
-          ComputeBoundaryChecks(original_shape, tile_shape),
-          CacheModifier::NONE, EvictionPolicy::NORMAL);
+                                  offsets, strides, op.getLayout());
+      builder.create<StoreOp>(ptr, op.getSrc(),
+                              ComputeBoundaryChecks(original_shape, tile_shape),
+                              CacheModifier::NONE, EvictionPolicy::NORMAL);
     }
-
     // InsertOp has a result, so we propagate it to the users.
     op->replaceAllUsesWith(ValueRange(op.getDst()));
-
     return mlir::success();
   }
 
@@ -601,17 +582,19 @@ class TritonXLAExtractInsertToTritonPass
 
     mlir::MLIRContext* mlir_context = &getContext();
     mlir::RewritePatternSet patterns(mlir_context);
-    // clang-format off
     patterns.add<RewriteExtract,
                  RewriteInsert
                 >(mlir_context, &device_description_, is_tma_enabled_);
-    patterns.add<RewriteFuncOp,
-                 RewriteScalarExtract,
-                 RewriteScalarInsert>(mlir_context);
-    // clang-format on
-
+    patterns.add<RewriteScalarExtract, RewriteScalarInsert>(mlir_context);
     if (mlir::failed(
             mlir::applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+      signalPassFailure();
+    }
+
+    mlir::RewritePatternSet func_pattern(mlir_context);
+    func_pattern.add<RewriteFuncOp>(mlir_context);
+    if (mlir::failed(mlir::applyPatternsGreedily(getOperation(),
+                                                 std::move(func_pattern)))) {
       signalPassFailure();
     }
   }

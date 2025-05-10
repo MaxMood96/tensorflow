@@ -15,11 +15,15 @@ limitations under the License.
 
 #include "xla/shape.h"
 
+#include <vector>
+
 #include <gtest/gtest.h>
 #include "absl/hash/hash_testing.h"
+#include "absl/strings/str_cat.h"
 #include "xla/hlo/testlib/test.h"
 #include "xla/layout.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/platform/test_benchmark.h"
 #include "xla/xla_data.pb.h"
 
@@ -60,9 +64,10 @@ TEST_F(ShapeTest, ShapeToFromProto) {
   for (const Shape& shape :
        {opaque_, token_, scalar_, matrix_, matrix2_, tuple_, nested_tuple_,
         dynamic_matrix_, unbounded_}) {
-    Shape shape_copy(shape.ToProto());
-    EXPECT_TRUE(ShapeUtil::Equal(shape, shape_copy))
-        << shape << " != " << shape_copy;
+    auto shape_copy = Shape::FromProto(shape.ToProto());
+    TF_ASSERT_OK(shape_copy);
+    EXPECT_TRUE(ShapeUtil::Equal(shape, *shape_copy))
+        << shape << " != " << *shape_copy;
   }
 }
 
@@ -234,7 +239,8 @@ TEST_F(ShapeTest, ProgramShapeToFromProto) {
   *program_shape.mutable_result() = ShapeUtil::MakeShape(F32, {7});
 
   // Create a copy of the program shape by round-tripping through a proto.
-  ProgramShape program_shape_copy(program_shape.ToProto());
+  TF_ASSERT_OK_AND_ASSIGN(auto program_shape_copy,
+                          ProgramShape::FromProto(program_shape.ToProto()));
   ASSERT_EQ(program_shape.parameters_size(),
             program_shape_copy.parameters_size());
   for (int i = 0; i < program_shape.parameters_size(); ++i) {
@@ -302,10 +308,11 @@ TEST_F(ShapeTest, SupportsAbslHash) {
        nested_tuple_, dynamic_matrix_}));
 }
 
-void BM_ShapeCopy(::testing::benchmark::State& state) {
-  // Create different shapes based on benchmark parameters:
+static const int kDistinctShapes = 4;
+
+static Shape MakeShapeHelper(int id) {
   Shape shape;
-  switch (state.range(0)) {
+  switch (id % kDistinctShapes) {
     case 0: {
       // Shape()
       break;
@@ -319,17 +326,62 @@ void BM_ShapeCopy(::testing::benchmark::State& state) {
     case 2: {
       // f32[1,2,2]{2,1,0:T(2,128)}
       shape = Shape(F32, {1, 2, 2}, {false, false, false});
-      *shape.mutable_layout() = Layout({2, 1, 0}, {}, {}, {}, {Tile({2, 128})});
+      *shape.mutable_layout() = Layout({2, 1, 0}, {}, {Tile({2, 128})});
       break;
     }
+    default: {
+      // f32[1,2,2]{2,1,0}
+      shape = Shape(F32, {1024, 1024, 128}, {});
+    }
   }
+  return shape;
+}
+
+void BM_ShapeProtoCopy(::testing::benchmark::State& state) {
+  // Create different shapes based on benchmark parameters:
+  Shape shape = MakeShapeHelper(state.range(0));
   state.SetLabel(shape.ToString(true));
 
   for (auto s : state) {
-    Shape copy(shape);
+    auto copy = Shape::FromProto(shape.ToProto());
+    TF_ASSERT_OK(copy);
+    CHECK(ShapeUtil::Equal(shape, *copy));
   }
 }
-BENCHMARK(BM_ShapeCopy)->Arg(0)->Arg(1)->Arg(2);
+BENCHMARK(BM_ShapeProtoCopy)->Arg(0)->Arg(1)->Arg(2);
+
+void BM_ShapeCopy(::testing::benchmark::State& state) {
+  // Create different shapes based on benchmark parameters:
+  const int n_shapes = state.range(0);
+  std::vector<Shape> shapes(n_shapes);
+  bool share = (state.range(1) != 0);
+  for (int i = 0; i < n_shapes; i++) {
+    if (share && (i >= kDistinctShapes)) {
+      shapes[i] = shapes[i % kDistinctShapes];
+    } else {
+      shapes[i] = MakeShapeHelper(i);
+    }
+  }
+  state.SetLabel(absl::StrCat("Working set: ", n_shapes, " shapes",
+                              share ? " shared" : ""));
+
+  int64_t iter = 0;
+  Shape copy;
+  for (auto s : state) {
+    copy = shapes[iter];
+    iter++;
+    if (iter == n_shapes) {
+      iter = 0;
+    }
+  }
+}
+BENCHMARK(BM_ShapeCopy)
+    ->ArgPair(1, 0)
+    ->ArgPair(1, 1)
+    ->ArgPair(1000, 0)
+    ->ArgPair(1000, 1)
+    ->ArgPair(100000, 0)
+    ->ArgPair(100000, 1);
 
 }  // namespace
 }  // namespace xla

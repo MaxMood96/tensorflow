@@ -212,7 +212,7 @@ class tstring {
   // Support for absl::StrCat() etc.
   template <typename Sink>
   friend void AbslStringify(Sink& sink, const tstring& str) {
-    absl::Format(&sink, "%s", str.data());
+    sink.Append(absl::string_view(str));
   }
 };
 

@@ -1,476 +1,154 @@
 Auto generated patch. Do not edit or delete it, even if empty.
-diff -ruN --strip-trailing-cr a/clang/lib/Basic/Targets/SPIR.h b/clang/lib/Basic/Targets/SPIR.h
---- a/clang/lib/Basic/Targets/SPIR.h
-+++ b/clang/lib/Basic/Targets/SPIR.h
-@@ -57,8 +57,9 @@
- // Used by both the SPIR and SPIR-V targets.
- static const unsigned SPIRDefIsGenMap[] = {
-     4, // Default
--    // OpenCL address space values for this map are dummy and they can't be used
--    0, // opencl_global
-+    // Some OpenCL address space values for this map are dummy and they can't be
-+    // used
-+    1, // opencl_global
-     0, // opencl_local
-     0, // opencl_constant
-     0, // opencl_private
-diff -ruN --strip-trailing-cr a/clang/lib/CodeGen/CGDebugInfo.cpp b/clang/lib/CodeGen/CGDebugInfo.cpp
---- a/clang/lib/CodeGen/CGDebugInfo.cpp
-+++ b/clang/lib/CodeGen/CGDebugInfo.cpp
-@@ -2018,17 +2018,8 @@
-   return getOrCreateInstanceMethodType(ThisType, Func, Unit);
- }
- 
--llvm::DISubroutineType *CGDebugInfo::getOrCreateMethodTypeForDestructor(
--    const CXXMethodDecl *Method, llvm::DIFile *Unit, QualType FNType) {
--  const FunctionProtoType *Func = FNType->getAs<FunctionProtoType>();
--  // skip the first param since it is also this
--  return getOrCreateInstanceMethodType(Method->getThisType(), Func, Unit, true);
--}
--
--llvm::DISubroutineType *
--CGDebugInfo::getOrCreateInstanceMethodType(QualType ThisPtr,
--                                           const FunctionProtoType *Func,
--                                           llvm::DIFile *Unit, bool SkipFirst) {
-+llvm::DISubroutineType *CGDebugInfo::getOrCreateInstanceMethodType(
-+    QualType ThisPtr, const FunctionProtoType *Func, llvm::DIFile *Unit) {
-   FunctionProtoType::ExtProtoInfo EPI = Func->getExtProtoInfo();
-   Qualifiers &Qc = EPI.TypeQuals;
-   Qc.removeConst();
-@@ -2068,7 +2059,7 @@
+diff -ruN --strip-trailing-cr a/clang/include/clang/AST/Type.h b/clang/include/clang/AST/Type.h
+--- a/clang/include/clang/AST/Type.h
++++ b/clang/include/clang/AST/Type.h
+@@ -3602,6 +3602,9 @@
    }
  
-   // Copy rest of the arguments.
--  for (unsigned i = (SkipFirst ? 2 : 1), e = Args.size(); i != e; ++i)
-+  for (unsigned i = 1, e = Args.size(); i != e; ++i)
-     Elts.push_back(Args[i]);
+   NestedNameSpecifier *getQualifier() const { return Qualifier; }
++  /// Note: this can trigger extra deserialization when external AST sources are
++  /// used. Prefer `getCXXRecordDecl()` unless you really need the most recent
++  /// decl.
+   CXXRecordDecl *getMostRecentCXXRecordDecl() const;
  
-   // Attach FlagObjectPointer to the explicit "this" parameter.
-@@ -4381,12 +4372,6 @@
-     // subprogram DIE will miss DW_AT_decl_file and DW_AT_decl_line fields.
-     return DBuilder.createSubroutineType(DBuilder.getOrCreateTypeArray({}));
+   bool isSugared() const;
+@@ -3610,7 +3613,10 @@
+   }
  
--  if (const auto *Method = dyn_cast<CXXDestructorDecl>(D)) {
--    // Read method type from 'FnType' because 'D.getType()' does not cover
--    // implicit arguments for destructors.
--    return getOrCreateMethodTypeForDestructor(Method, F, FnType);
--  }
--
-   if (const auto *Method = dyn_cast<CXXMethodDecl>(D))
-     return getOrCreateMethodType(Method, F);
+   void Profile(llvm::FoldingSetNodeID &ID) {
+-    Profile(ID, getPointeeType(), getQualifier(), getMostRecentCXXRecordDecl());
++    // FIXME: `getMostRecentCXXRecordDecl()` should be possible to use here,
++    // however when external AST sources are used it causes nondeterminism
++    // issues (see https://github.com/llvm/llvm-project/pull/137910).
++    Profile(ID, getPointeeType(), getQualifier(), getCXXRecordDecl());
+   }
  
-diff -ruN --strip-trailing-cr a/clang/lib/CodeGen/CGDebugInfo.h b/clang/lib/CodeGen/CGDebugInfo.h
---- a/clang/lib/CodeGen/CGDebugInfo.h
-+++ b/clang/lib/CodeGen/CGDebugInfo.h
-@@ -249,14 +249,9 @@
-   /// to get a method type which includes \c this pointer.
-   llvm::DISubroutineType *getOrCreateMethodType(const CXXMethodDecl *Method,
-                                                 llvm::DIFile *F);
--
--  llvm::DISubroutineType *
--  getOrCreateMethodTypeForDestructor(const CXXMethodDecl *Method,
--                                     llvm::DIFile *F, QualType FNType);
--
-   llvm::DISubroutineType *
-   getOrCreateInstanceMethodType(QualType ThisPtr, const FunctionProtoType *Func,
--                                llvm::DIFile *Unit, bool SkipFirst = false);
-+                                llvm::DIFile *Unit);
-   llvm::DISubroutineType *
-   getOrCreateFunctionType(const Decl *D, QualType FnType, llvm::DIFile *F);
-   /// \return debug info descriptor for vtable.
-diff -ruN --strip-trailing-cr a/clang/lib/CodeGen/CodeGenModule.cpp b/clang/lib/CodeGen/CodeGenModule.cpp
---- a/clang/lib/CodeGen/CodeGenModule.cpp
-+++ b/clang/lib/CodeGen/CodeGenModule.cpp
-@@ -5837,15 +5837,24 @@
-     }
+   static void Profile(llvm::FoldingSetNodeID &ID, QualType Pointee,
+@@ -3620,6 +3626,9 @@
+   static bool classof(const Type *T) {
+     return T->getTypeClass() == MemberPointer;
+   }
++
++private:
++  CXXRecordDecl *getCXXRecordDecl() const;
+ };
+ 
+ /// Capture whether this is a normal array (e.g. int X[4])
+diff -ruN --strip-trailing-cr a/clang/lib/AST/Type.cpp b/clang/lib/AST/Type.cpp
+--- a/clang/lib/AST/Type.cpp
++++ b/clang/lib/AST/Type.cpp
+@@ -5305,10 +5305,14 @@
+     ID.AddPointer(Cls->getCanonicalDecl());
  }
  
-+static GlobalDecl getBaseVariantGlobalDecl(const FunctionDecl *FD) {
-+  if (auto const *CD = dyn_cast<const CXXConstructorDecl>(FD))
-+    return GlobalDecl(CD, CXXCtorType::Ctor_Base);
-+  else if (auto const *DD = dyn_cast<const CXXDestructorDecl>(FD))
-+    return GlobalDecl(DD, CXXDtorType::Dtor_Base);
-+  return GlobalDecl(FD);
++CXXRecordDecl *MemberPointerType::getCXXRecordDecl() const {
++  return dyn_cast<MemberPointerType>(getCanonicalTypeInternal())
++      ->getQualifier()
++      ->getAsRecordDecl();
 +}
 +
- void CodeGenModule::EmitExternalFunctionDeclaration(const FunctionDecl *FD) {
-   if (CGDebugInfo *DI = getModuleDebugInfo())
-     if (getCodeGenOpts().hasReducedDebugInfo()) {
-+      GlobalDecl GD = getBaseVariantGlobalDecl(FD);
-       auto *Ty = getTypes().ConvertType(FD->getType());
--      StringRef MangledName = getMangledName(FD);
-+      StringRef MangledName = getMangledName(GD);
-       auto *Fn = cast<llvm::Function>(
--          GetOrCreateLLVMFunction(MangledName, Ty, FD, /* ForVTable */ false));
-+          GetOrCreateLLVMFunction(MangledName, Ty, GD, /* ForVTable */ false));
-       if (!Fn->getSubprogram())
--        DI->EmitFunctionDecl(FD, FD->getLocation(), FD->getType(), Fn);
-+        DI->EmitFunctionDecl(GD, FD->getLocation(), FD->getType(), Fn);
-     }
+ CXXRecordDecl *MemberPointerType::getMostRecentCXXRecordDecl() const {
+-  auto *RD = dyn_cast<MemberPointerType>(getCanonicalTypeInternal())
+-                 ->getQualifier()
+-                 ->getAsRecordDecl();
++  auto *RD = getCXXRecordDecl();
+   if (!RD)
+     return nullptr;
+   return RD->getMostRecentNonInjectedDecl();
+diff -ruN --strip-trailing-cr a/clang/lib/Sema/SemaChecking.cpp b/clang/lib/Sema/SemaChecking.cpp
+--- a/clang/lib/Sema/SemaChecking.cpp
++++ b/clang/lib/Sema/SemaChecking.cpp
+@@ -11596,6 +11596,15 @@
+   }
  }
  
-diff -ruN --strip-trailing-cr a/clang/lib/Serialization/ASTReaderDecl.cpp b/clang/lib/Serialization/ASTReaderDecl.cpp
---- a/clang/lib/Serialization/ASTReaderDecl.cpp
-+++ b/clang/lib/Serialization/ASTReaderDecl.cpp
-@@ -1076,6 +1076,8 @@
-   FD->setFriendConstraintRefersToEnclosingTemplate(
-       FunctionDeclBits.getNextBit());
-   FD->setUsesSEHTry(FunctionDeclBits.getNextBit());
-+  FD->setIsDestroyingOperatorDelete(FunctionDeclBits.getNextBit());
-+  FD->setIsTypeAwareOperatorNewOrDelete(FunctionDeclBits.getNextBit());
++static void CheckCommaOperand(Sema &S, Expr *E, QualType T, SourceLocation CC,
++                              bool ExtraCheckForImplicitConversion) {
++  E = E->IgnoreParenImpCasts();
++  AnalyzeImplicitConversions(S, E, CC);
++
++  if (ExtraCheckForImplicitConversion && E->getType() != T)
++    S.CheckImplicitConversion(E, T, CC);
++}
++
+ /// Analyze the given compound assignment for the possible losing of
+ /// floating-point precision.
+ static void AnalyzeCompoundAssignment(Sema &S, BinaryOperator *E) {
+@@ -12413,7 +12422,7 @@
+           << OrigE->getSourceRange() << T->isBooleanType()
+           << FixItHint::CreateReplacement(UO->getBeginLoc(), "!");
  
-   FD->EndRangeLoc = readSourceLocation();
-   if (FD->isExplicitlyDefaulted())
-diff -ruN --strip-trailing-cr a/clang/lib/Serialization/ASTWriterDecl.cpp b/clang/lib/Serialization/ASTWriterDecl.cpp
---- a/clang/lib/Serialization/ASTWriterDecl.cpp
-+++ b/clang/lib/Serialization/ASTWriterDecl.cpp
-@@ -847,6 +847,8 @@
-   FunctionDeclBits.addBit(D->isInstantiatedFromMemberTemplate());
-   FunctionDeclBits.addBit(D->FriendConstraintRefersToEnclosingTemplate());
-   FunctionDeclBits.addBit(D->usesSEHTry());
-+  FunctionDeclBits.addBit(D->isDestroyingOperatorDelete());
-+  FunctionDeclBits.addBit(D->isTypeAwareOperatorNewOrDelete());
-   Record.push_back(FunctionDeclBits);
- 
-   Record.AddSourceLocation(D->getEndLoc());
-diff -ruN --strip-trailing-cr a/clang/test/CodeGenCUDASPIRV/printf.cu b/clang/test/CodeGenCUDASPIRV/printf.cu
---- a/clang/test/CodeGenCUDASPIRV/printf.cu
-+++ b/clang/test/CodeGenCUDASPIRV/printf.cu
-@@ -0,0 +1,11 @@
-+// RUN: %clang_cc1 -fcuda-is-device -triple spirv32 -o - -emit-llvm -x cuda %s  | FileCheck --check-prefix=CHECK-SPIRV32 %s
-+// RUN: %clang_cc1 -fcuda-is-device -triple spirv64 -o - -emit-llvm -x cuda %s  | FileCheck --check-prefix=CHECK-SPIRV64 %s
-+
-+// CHECK-SPIRV32: @.str = private unnamed_addr addrspace(4) constant [13 x i8] c"Hello World\0A\00", align 1
-+// CHECK-SPIRV64: @.str = private unnamed_addr addrspace(1) constant [13 x i8] c"Hello World\0A\00", align 1
-+
-+extern "C" __attribute__((device)) int printf(const char* format, ...);
-+
-+__attribute__((global)) void printf_kernel() {
-+  printf("Hello World\n");
-+}
-diff -ruN --strip-trailing-cr a/clang/test/CodeGenCXX/debug-info-dtor-implicit-args.cpp b/clang/test/CodeGenCXX/debug-info-dtor-implicit-args.cpp
---- a/clang/test/CodeGenCXX/debug-info-dtor-implicit-args.cpp
-+++ b/clang/test/CodeGenCXX/debug-info-dtor-implicit-args.cpp
-@@ -1,24 +0,0 @@
--// RUN: %clang_cc1 -triple x86_64-none-linux-gnu -emit-llvm -debug-info-kind=limited %s -o - | FileCheck %s
--// RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -emit-llvm -debug-info-kind=limited %s -o - | FileCheck --check-prefix MSVC %s
--
--struct B {
--    virtual ~B() {}
--};
--
--struct A : virtual B {
--};
--
--A a;
--
--
--// CHECK-DAG: !{{[0-9]+}} = !DILocalVariable(name: "vtt", arg: 2, scope: ![[destructor:[0-9]+]], type: ![[vtttype:[0-9]+]], flags: DIFlagArtificial)
--// CHECK-DAG: ![[destructor]] = distinct !DISubprogram(name: "~A", {{.*}}, type: ![[subroutinetype:[0-9]+]]
--// CHECK-DAG: ![[subroutinetype]] = !DISubroutineType(types: ![[types:[0-9]+]])
--// CHECK-DAG: [[types]] = !{null, !{{[0-9]+}}, ![[vtttype]]}
--
--// MSVC-DAG: ![[inttype:[0-9]+]] = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
--// MSVC-DAG: ![[voidpointertype:[0-9]+]] = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: 64)
--// MSVC-DAG: ![[destructor:[0-9]+]] = distinct !DISubprogram(name: "~A", linkageName: "??_GA@@UEAAPEAXI@Z", {{.*}}, type: ![[subroutinetype:[0-9]+]]
--// MSVC-DAG: !{{[0-9]+}} = !DILocalVariable(name: "should_call_delete", arg: 2, scope: ![[destructor]], type: ![[inttype]], flags: DIFlagArtificial)
--// MSVC-DAG: ![[subroutinetype]] = !DISubroutineType(types: ![[types:[0-9]+]])
--// MSVC-DAG: [[types]] = !{![[voidpointertype]], !{{[0-9]+}}, ![[inttype]]}
-diff -ruN --strip-trailing-cr a/clang/test/Modules/Inputs/PR137102/module.modulemap b/clang/test/Modules/Inputs/PR137102/module.modulemap
---- a/clang/test/Modules/Inputs/PR137102/module.modulemap
-+++ b/clang/test/Modules/Inputs/PR137102/module.modulemap
-@@ -0,0 +1 @@
-+module type_aware_destroying_new_delete { header "type_aware_destroying_new_delete.h" export * }
-diff -ruN --strip-trailing-cr a/clang/test/Modules/Inputs/PR137102/type_aware_destroying_new_delete.h b/clang/test/Modules/Inputs/PR137102/type_aware_destroying_new_delete.h
---- a/clang/test/Modules/Inputs/PR137102/type_aware_destroying_new_delete.h
-+++ b/clang/test/Modules/Inputs/PR137102/type_aware_destroying_new_delete.h
-@@ -0,0 +1,52 @@
-+
-+namespace std {
-+    struct destroying_delete_t { };
-+    template <class T> struct type_identity {
-+        using type = T;
-+    };
-+    typedef __SIZE_TYPE__ size_t;
-+    enum class align_val_t : size_t;
-+};
-+
-+struct A {
-+    A();
-+   void *operator new(std::size_t);
-+   void operator delete(A*, std::destroying_delete_t);
-+};
-+
-+struct B {
-+    B();
-+    void *operator new(std::type_identity<B>, std::size_t, std::align_val_t);
-+    void operator delete(std::type_identity<B>, void*, std::size_t, std::align_val_t);
-+};
-+
-+struct C {
-+    C();
-+    template <class T> void *operator new(std::type_identity<T>, std::size_t, std::align_val_t);
-+    template <class T> void operator delete(std::type_identity<T>, void*, std::size_t, std::align_val_t);
-+};
-+
-+struct D {
-+    D();
-+};
-+void *operator new(std::type_identity<D>, std::size_t, std::align_val_t);
-+void operator delete(std::type_identity<D>, void*, std::size_t, std::align_val_t);
-+
-+struct E {
-+    E();
-+};
-+template <class T> void *operator new(std::type_identity<T>, std::size_t, std::align_val_t);
-+template <class T> void operator delete(std::type_identity<T>, void*, std::size_t, std::align_val_t);
-+
-+void in_module_tests() {
-+  A* a = new A;
-+  delete a;
-+  B *b = new B;
-+  delete b;
-+  C *c = new C;
-+  delete c;
-+  D *d = new D;
-+  delete d;
-+  E *e = new E;
-+  delete e;
-+}
-diff -ruN --strip-trailing-cr a/clang/test/Modules/type-aware-destroying-new-and-delete-modules.cpp b/clang/test/Modules/type-aware-destroying-new-and-delete-modules.cpp
---- a/clang/test/Modules/type-aware-destroying-new-and-delete-modules.cpp
-+++ b/clang/test/Modules/type-aware-destroying-new-and-delete-modules.cpp
-@@ -0,0 +1,23 @@
-+// RUN: rm -rf %t
-+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x c++ -std=c++26 -fmodules-cache-path=%t -I %S/Inputs/PR137102 -emit-llvm-only %s
-+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x c++ -std=c++26 -fmodules-cache-path=%t -I %S/Inputs/PR137102 -emit-llvm-only %s -triple i686-windows
-+
-+#include "type_aware_destroying_new_delete.h"
-+
-+
-+static void call_in_module_function(void) {
-+    in_module_tests();
-+}
-+
-+void out_of_module_tests() {
-+    A* a = new A;
-+    delete a;
-+    B *b = new B;
-+    delete b;
-+    C *c = new C;
-+    delete c;
-+    D *d = new D;
-+    delete d;
-+    E *e = new E;
-+    delete e;
-+}
-diff -ruN --strip-trailing-cr a/clang/test/PCH/Inputs/type_aware_destroying_new_delete.h b/clang/test/PCH/Inputs/type_aware_destroying_new_delete.h
---- a/clang/test/PCH/Inputs/type_aware_destroying_new_delete.h
-+++ b/clang/test/PCH/Inputs/type_aware_destroying_new_delete.h
-@@ -0,0 +1,52 @@
-+
-+namespace std {
-+    struct destroying_delete_t { };
-+    template <class T> struct type_identity {
-+        using type = T;
-+    };
-+    typedef __SIZE_TYPE__ size_t;
-+    enum class align_val_t : size_t;
-+};
-+
-+struct A {
-+    A();
-+   void *operator new(std::size_t);
-+   void operator delete(A*, std::destroying_delete_t);
-+};
-+
-+struct B {
-+    B();
-+    void *operator new(std::type_identity<B>, std::size_t, std::align_val_t);
-+    void operator delete(std::type_identity<B>, void*, std::size_t, std::align_val_t);
-+};
-+
-+struct C {
-+    C();
-+    template <class T> void *operator new(std::type_identity<T>, std::size_t, std::align_val_t);
-+    template <class T> void operator delete(std::type_identity<T>, void*, std::size_t, std::align_val_t);
-+};
-+
-+struct D {
-+    D();
-+};
-+void *operator new(std::type_identity<D>, std::size_t, std::align_val_t);
-+void operator delete(std::type_identity<D>, void*, std::size_t, std::align_val_t);
-+
-+struct E {
-+    E();
-+};
-+template <class T> void *operator new(std::type_identity<T>, std::size_t, std::align_val_t);
-+template <class T> void operator delete(std::type_identity<T>, void*, std::size_t, std::align_val_t);
-+
-+void in_pch_tests() {
-+  A* a = new A;
-+  delete a;
-+  B *b = new B;
-+  delete b;
-+  C *c = new C;
-+  delete c;
-+  D *d = new D;
-+  delete d;
-+  E *e = new E;
-+  delete e;
-+}
-diff -ruN --strip-trailing-cr a/clang/test/PCH/type-aware-destroying-new-and-delete-pch.cpp b/clang/test/PCH/type-aware-destroying-new-and-delete-pch.cpp
---- a/clang/test/PCH/type-aware-destroying-new-and-delete-pch.cpp
-+++ b/clang/test/PCH/type-aware-destroying-new-and-delete-pch.cpp
-@@ -0,0 +1,27 @@
-+// Test this without pch.
-+// RUN: %clang_cc1 -x c++ -std=c++26 -include %S/Inputs/type_aware_destroying_new_delete.h -emit-llvm -o - %s
-+
-+// Test with pch.
-+// RUN: %clang_cc1 -x c++ -std=c++26 -emit-pch -o %t %S/Inputs/type_aware_destroying_new_delete.h
-+// RUN: %clang_cc1 -x c++ -std=c++26 -include-pch %t -emit-llvm -o - %s 
-+
-+// RUN: %clang_cc1 -x c++ -std=c++11 -emit-pch -fpch-instantiate-templates -o %t %S/Inputs/type_aware_destroying_new_delete.h
-+// RUN: %clang_cc1 -x c++ -std=c++11 -include-pch %t -emit-llvm -o - %s
-+
-+
-+static void call_in_pch_function(void) {
-+    in_pch_tests();
-+}
-+
-+void out_of_pch_tests() {
-+    A* a = new A;
-+    delete a;
-+    B *b = new B;
-+    delete b;
-+    C *c = new C;
-+    delete c;
-+    D *d = new D;
-+    delete d;
-+    E *e = new E;
-+    delete e;
-+}
-diff -ruN --strip-trailing-cr a/llvm/lib/Transforms/IPO/FunctionAttrs.cpp b/llvm/lib/Transforms/IPO/FunctionAttrs.cpp
---- a/llvm/lib/Transforms/IPO/FunctionAttrs.cpp
-+++ b/llvm/lib/Transforms/IPO/FunctionAttrs.cpp
-@@ -661,8 +661,13 @@
-     auto TypeSize = DL.getTypeStoreSize(Ty);
-     if (!TypeSize.isScalable() && Offset) {
-       int64_t Size = TypeSize.getFixedValue();
--      return ConstantRange(APInt(64, *Offset, true),
--                           APInt(64, *Offset + Size, true));
-+      APInt Low(64, *Offset, true);
-+      bool Overflow;
-+      APInt High = Low.sadd_ov(APInt(64, Size, true), Overflow);
-+      // Bail if the range overflows signed 64-bit int.
-+      if (Overflow)
-+        return std::nullopt;
-+      return ConstantRange(Low, High);
+-  if (const auto *BO = dyn_cast<BinaryOperator>(SourceExpr))
++  if (auto *BO = dyn_cast<BinaryOperator>(SourceExpr)) {
+     if ((BO->getOpcode() == BO_And || BO->getOpcode() == BO_Or) &&
+         BO->getLHS()->isKnownToHaveBooleanValue() &&
+         BO->getRHS()->isKnownToHaveBooleanValue() &&
+@@ -12439,7 +12448,21 @@
+                    (BO->getOpcode() == BO_And ? "&&" : "||"));
+         S.Diag(BO->getBeginLoc(), diag::note_cast_operand_to_int);
+       }
++    } else if (BO->isCommaOp() && !S.getLangOpts().CPlusPlus) {
++      /// Analyze the given comma operator. The basic idea behind the analysis
++      /// is to analyze the left and right operands slightly differently. The
++      /// left operand needs to check whether the operand itself has an implicit
++      /// conversion, but not whether the left operand induces an implicit
++      /// conversion for the entire comma expression itself. This is similar to
++      /// how CheckConditionalOperand behaves; it's as-if the correct operand
++      /// were directly used for the implicit conversion check.
++      CheckCommaOperand(S, BO->getLHS(), T, BO->getOperatorLoc(),
++                        /*ExtraCheckForImplicitConversion=*/false);
++      CheckCommaOperand(S, BO->getRHS(), T, BO->getOperatorLoc(),
++                        /*ExtraCheckForImplicitConversion=*/true);
++      return;
      }
-     return std::nullopt;
-   };
-diff -ruN --strip-trailing-cr a/llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp b/llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp
---- a/llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp
-+++ b/llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp
-@@ -23904,6 +23904,8 @@
-     assert(isValidElementType(V1->getType()) &&
-            isValidElementType(V2->getType()) &&
-            "Expected vectorizable types only.");
-+    if (V1 == V2)
-+      return false;
-     // It is fine to compare type IDs here, since we expect only vectorizable
-     // types, like ints, floats and pointers, we don't care about other type.
-     if (V1->getType()->getTypeID() < V2->getType()->getTypeID())
-@@ -23940,7 +23942,7 @@
-           if (NodeI1 != NodeI2)
-             return NodeI1->getDFSNumIn() < NodeI2->getDFSNumIn();
-           InstructionsState S = getSameOpcode({I1, I2}, *TLI);
--          if (S && !S.isAltShuffle()) {
-+          if (S && !S.isAltShuffle() && I1->getOpcode() == I2->getOpcode()) {
-             const auto *E1 = dyn_cast<ExtractElementInst>(I1);
-             const auto *E2 = dyn_cast<ExtractElementInst>(I2);
-             if (!E1 || !E2)
-@@ -23972,6 +23974,8 @@
++  }
  
-             continue;
-           }
-+          if (I1->getOpcode() == I2->getOpcode())
-+            continue;
-           return I1->getOpcode() < I2->getOpcode();
-         }
-         if (I1)
-diff -ruN --strip-trailing-cr a/llvm/test/Transforms/FunctionAttrs/initializes.ll b/llvm/test/Transforms/FunctionAttrs/initializes.ll
---- a/llvm/test/Transforms/FunctionAttrs/initializes.ll
-+++ b/llvm/test/Transforms/FunctionAttrs/initializes.ll
-@@ -635,3 +635,17 @@
-   call void @llvm.memmove.p0.p0.i64(ptr %dst.1, ptr %src, i64 0, i1 false)
-   ret void
+   // For conditional operators, we analyze the arguments as if they
+   // were being fed directly into the output.
+diff -ruN --strip-trailing-cr a/clang/test/Sema/implicit-cast.c b/clang/test/Sema/implicit-cast.c
+--- a/clang/test/Sema/implicit-cast.c
++++ b/clang/test/Sema/implicit-cast.c
+@@ -1,4 +1,4 @@
+-// RUN: %clang_cc1 -fsyntax-only %s
++// RUN: %clang_cc1 -fsyntax-only -verify %s
+ 
+ static char *test1(int cf) {
+   return cf ? "abc" : 0;
+@@ -6,3 +6,8 @@
+ static char *test2(int cf) {
+   return cf ? 0 : "abc";
  }
 +
-+; We should bail if the range overflows a singed 64-bit int.
-+define void @range_overflows_signed_64_bit_int(ptr %arg) {
-+; CHECK: Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: write)
-+; CHECK-LABEL: define void @range_overflows_signed_64_bit_int(
-+; CHECK-SAME: ptr writeonly captures(none) [[ARG:%.*]]) #[[ATTR0]] {
-+; CHECK-NEXT:    [[GETELEMENTPTR:%.*]] = getelementptr i8, ptr [[ARG]], i64 9223372036854775804
-+; CHECK-NEXT:    store i32 0, ptr [[GETELEMENTPTR]], align 4
-+; CHECK-NEXT:    ret void
-+;
-+  %getelementptr = getelementptr i8, ptr %arg, i64 9223372036854775804
-+  store i32 0, ptr %getelementptr
-+  ret void
++int baz(void) {
++  int f;
++  return ((void)0, f = 1.4f); // expected-warning {{implicit conversion from 'float' to 'int' changes value from 1.4 to 1}}
 +}
-diff -ruN --strip-trailing-cr a/llvm/test/Transforms/SLPVectorizer/X86/phi-comparator.ll b/llvm/test/Transforms/SLPVectorizer/X86/phi-comparator.ll
---- a/llvm/test/Transforms/SLPVectorizer/X86/phi-comparator.ll
-+++ b/llvm/test/Transforms/SLPVectorizer/X86/phi-comparator.ll
-@@ -0,0 +1,38 @@
-+; NOTE: Assertions have been autogenerated by utils/update_test_checks.py UTC_ARGS: --version 5
-+; RUN: opt -S --passes=slp-vectorizer -mtriple=x86_64-unknown-linux-gnu < %s | FileCheck %s
+diff -ruN --strip-trailing-cr a/clang/test/Sema/implicit-int-enum-conversion.c b/clang/test/Sema/implicit-int-enum-conversion.c
+--- a/clang/test/Sema/implicit-int-enum-conversion.c
++++ b/clang/test/Sema/implicit-int-enum-conversion.c
+@@ -50,3 +50,25 @@
+   return E2_Zero;       // expected-warning {{implicit conversion from enumeration type 'enum E2' to different enumeration type 'enum E1'}} \
+                            cxx-error {{cannot initialize return object of type 'enum E1' with an rvalue of type 'E2'}}
+ }
 +
-+define void @test(i32 %julianDay, i1 %cmp, i8 %0, i16 %1) {
-+; CHECK-LABEL: define void @test(
-+; CHECK-SAME: i32 [[JULIANDAY:%.*]], i1 [[CMP:%.*]], i8 [[TMP0:%.*]], i16 [[TMP1:%.*]]) {
-+; CHECK-NEXT:  [[ENTRY:.*]]:
-+; CHECK-NEXT:    br i1 [[CMP]], label %[[IF_THEN2:.*]], label %[[IF_END33:.*]]
-+; CHECK:       [[IF_THEN2]]:
-+; CHECK-NEXT:    [[CONV_I:%.*]] = sext i8 [[TMP0]] to i32
-+; CHECK-NEXT:    [[CONV_I2:%.*]] = sext i16 [[TMP1]] to i32
-+; CHECK-NEXT:    br label %[[IF_END33]]
-+; CHECK:       [[IF_END33]]:
-+; CHECK-NEXT:    [[MONTH_0:%.*]] = phi i32 [ [[CONV_I]], %[[IF_THEN2]] ], [ 0, %[[ENTRY]] ]
-+; CHECK-NEXT:    [[DAYOFMONTH_0:%.*]] = phi i32 [ [[CONV_I]], %[[IF_THEN2]] ], [ [[JULIANDAY]], %[[ENTRY]] ]
-+; CHECK-NEXT:    [[DAYOFYEAR_0:%.*]] = phi i32 [ [[CONV_I2]], %[[IF_THEN2]] ], [ 0, %[[ENTRY]] ]
-+; CHECK-NEXT:    store volatile i32 [[MONTH_0]], ptr null, align 4294967296
-+; CHECK-NEXT:    store volatile i32 [[DAYOFMONTH_0]], ptr null, align 4294967296
-+; CHECK-NEXT:    store volatile i32 [[DAYOFYEAR_0]], ptr null, align 4294967296
-+; CHECK-NEXT:    ret void
-+;
-+entry:
-+  br i1 %cmp, label %if.then2, label %if.end33
-+
-+if.then2:
-+  %conv.i = sext i8 %0 to i32
-+  %conv.i2 = sext i16 %1 to i32
-+  br label %if.end33
-+
-+if.end33:
-+  %month.0 = phi i32 [ %conv.i, %if.then2 ], [ 0, %entry ]
-+  %dayOfMonth.0 = phi i32 [ %conv.i, %if.then2 ], [ %julianDay, %entry ]
-+  %dayOfYear.0 = phi i32 [ %conv.i2, %if.then2 ], [ 0, %entry ]
-+  store volatile i32 %month.0, ptr null, align 4294967296
-+  store volatile i32 %dayOfMonth.0, ptr null, align 4294967296
-+  store volatile i32 %dayOfYear.0, ptr null, align 4294967296
-+  ret void
++enum E1 comma1(void) {
++  return ((void)0, E1_One);
 +}
-diff -ruN --strip-trailing-cr a/mlir/lib/Transforms/Utils/DialectConversion.cpp b/mlir/lib/Transforms/Utils/DialectConversion.cpp
---- a/mlir/lib/Transforms/Utils/DialectConversion.cpp
-+++ b/mlir/lib/Transforms/Utils/DialectConversion.cpp
-@@ -2106,6 +2106,7 @@
-     rewriterImpl.logger.startLine() << "* Fold {\n";
-     rewriterImpl.logger.indent();
-   });
-+  (void)rewriterImpl;
- 
-   // Try to fold the operation.
-   SmallVector<Value, 2> replacementValues;
++
++enum E1 comma2(void) {
++  enum E1 x;
++  return
++    (x = 12,  // expected-warning {{implicit conversion from 'int' to enumeration type 'enum E1' is invalid in C++}} \
++                 cxx-error {{assigning to 'enum E1' from incompatible type 'int'}}
++    E1_One);
++}
++
++enum E1 comma3(void) {
++  enum E1 x;
++  return ((void)0, foo()); // Okay, no conversion in C++
++}
++
++enum E1 comma4(void) {
++  return ((void)1, 2); // expected-warning {{implicit conversion from 'int' to enumeration type 'enum E1' is invalid in C++}} \
++                          cxx-error {{cannot initialize return object of type 'enum E1' with an rvalue of type 'int'}}
++}

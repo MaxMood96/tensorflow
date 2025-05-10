@@ -661,6 +661,7 @@ cc_library(
 filegroup(
     name = "xla_cpu_runtime_srcs",
     srcs = [
+        "context.h",
         "env_time.h",
         "macros.h",
         "platform.h",
@@ -693,7 +694,12 @@ cc_library(
         "numa.h",
         "snappy.h",
     ],
-    deps = tf_windows_aware_platform_deps("platform_port"),
+    deps = tf_windows_aware_platform_deps("platform_port") + [
+        ":platform",
+        "@local_xla//xla/tsl/platform:byte_order",
+        "@local_xla//xla/tsl/platform:dynamic_annotations",
+        "@local_xla//xla/tsl/platform:types",
+    ],
 )
 
 cc_library(
