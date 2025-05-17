@@ -1447,8 +1447,9 @@ bool IsTrivialInstruction(const HloInstruction* instruction) {
 }
 
 bool IsSliceLikeInstruction(const HloInstruction* instruction) {
-  return instruction->opcode() == HloOpcode::kSlice ||
-         instruction->opcode() == HloOpcode::kDynamicSlice;
+  return instruction->opcode() == HloOpcode::kSlice;
+  // TODO(b/415757985): Re-enable kDynamicSlice once we take account the other
+  // operands.
 }
 
 }  // namespace
@@ -2639,7 +2640,7 @@ void MsaAlgorithm::MaybeSplitAllocationValues(
     *mutable_element = result->dimension();
     Shape new_shape = allocation_value.value()->shape();
     if (new_shape.has_layout() &&
-        new_shape.layout().split_configs_size() == 0) {
+        new_shape.layout().split_configs().size() == 0) {
       new_shape.mutable_layout()->add_split_configs(result.value());
     }
     allocation_value.set_split_shape(new_shape);

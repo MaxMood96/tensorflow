@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/strings/match.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -29,26 +30,25 @@ limitations under the License.
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/quantization/tensorflow/cc/quantization_unit_loc.h"
-#include "tensorflow/compiler/mlir/quantization/tensorflow/ops/tf_op_quant_spec.h"
+#include "tensorflow/compiler/mlir/quantization/tensorflow/ops/temp_tf_op_quant_spec.h"
 #include "tensorflow/compiler/mlir/quantization/tensorflow/passes/tf_passes.h"
 #include "tensorflow/compiler/mlir/quantization/tensorflow/quantization_options.pb.h"
 
 namespace mlir {
-namespace quant {
+namespace tf_quant {
 namespace {
 
 using QuantizationUnit =
     tensorflow::quantization::UnitWiseQuantizationSpec::QuantizationUnit;
 
 // Adds QuantizationUnitLoc to quantizable layers.
-class TFAddQuantizationUnitLocPass
-    : public PassWrapper<TFAddQuantizationUnitLocPass,
+class AddQuantizationUnitLocPass
+    : public PassWrapper<AddQuantizationUnitLocPass,
                          OperationPass<func::FuncOp>> {
  public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TFAddQuantizationUnitLocPass)
-  explicit TFAddQuantizationUnitLocPass() = default;
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AddQuantizationUnitLocPass)
+  explicit AddQuantizationUnitLocPass() = default;
 
   StringRef getArgument() const final {
     // This is the argument used to refer to the pass in
@@ -155,7 +155,7 @@ class AddQuantizationUnitLoc : public RewritePattern {
   LogicalResult matchAndRewrite(Operation* op,
                                 PatternRewriter& rewriter) const override {
     if (!IsOpWithQuantizableTrait(op) ||
-        FindQuantizationUnitFromLoc(op->getLoc()).has_value()) {
+        quant::FindQuantizationUnitFromLoc(op->getLoc()).has_value()) {
       return failure();
     }
 
@@ -168,14 +168,15 @@ class AddQuantizationUnitLoc : public RewritePattern {
           op->getParentOfType<func::FuncOp>().getSymNameAttr().str();
       quantization_unit->set_func_name(func_name);
     }
-    QuantizationUnitLoc unit_loc(getContext(), quantization_unit.value());
+    quant::QuantizationUnitLoc unit_loc(getContext(),
+                                        quantization_unit.value());
     op->setLoc(unit_loc);
 
     return success();
   }
 };
 
-void TFAddQuantizationUnitLocPass::runOnOperation() {
+void AddQuantizationUnitLocPass::runOnOperation() {
   MLIRContext* ctx = &getContext();
   RewritePatternSet patterns(ctx);
   func::FuncOp func = getOperation();
@@ -190,13 +191,13 @@ void TFAddQuantizationUnitLocPass::runOnOperation() {
 
 }  // namespace
 
-// Creates an instance of `TFAddQuantizationUnitLocPass`.
+// Creates an instance of `AddQuantizationUnitLocPass`.
 std::unique_ptr<OperationPass<func::FuncOp>>
-CreateTFAddQuantizationUnitLocPass() {
-  return std::make_unique<TFAddQuantizationUnitLocPass>();
+CreateAddQuantizationUnitLocPass() {
+  return std::make_unique<AddQuantizationUnitLocPass>();
 }
 
-static PassRegistration<TFAddQuantizationUnitLocPass> pass;
+static PassRegistration<AddQuantizationUnitLocPass> pass;
 
-}  // namespace quant
+}  // namespace tf_quant
 }  // namespace mlir

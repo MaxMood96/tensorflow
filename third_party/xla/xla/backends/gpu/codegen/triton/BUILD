@@ -37,6 +37,7 @@ cc_library(
         "//xla:status_macros",
         "//xla/backends/gpu/codegen:fusion_emitter",
         "//xla/backends/gpu/runtime:kernel_thunk",
+        "//xla/backends/gpu/runtime:thunk",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_traversal",
         "//xla/service/gpu:backend_configs_cc",
@@ -52,6 +53,7 @@ cc_library(
         "//xla/service/llvm_ir:ir_array",
         "//xla/service/llvm_ir:llvm_util",
         "//xla/stream_executor:device_description",
+        "//xla/tsl/platform:statusor",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -63,7 +65,6 @@ cc_library(
         "@llvm-project//llvm:ir_headers",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -442,6 +443,7 @@ xla_cc_test(
     tags = ["no_oss"],  # Doesn't pass in OSS when building with the `fusion_emitter_stub`.
     deps = [
         ":fusion_emitter",
+        "//xla:xla_proto_cc",
         "//xla/codegen:emitter_loc_op_builder",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/testlib:filecheck",
@@ -573,14 +575,40 @@ xla_test(
     name = "fusion_emitter_int4_device_test",
     size = "large",
     srcs = if_gpu_is_configured(["fusion_emitter_int4_device_test.cc"]),
-    # TODO(b/372714955): Fix the memory leak!
-    backend_args = if_google(
-        {
-            "gpu_h100": ["--heap_check="],
-            "gpu_a100": ["--heap_check="],
-        },
-        {},
-    ),
+    backends = [
+        "gpu_a100",
+        "gpu_h100",
+        "gpu_b200",
+        "gpu_amd_any",
+    ],
+    shard_count = 10,
+    tags = [
+        "large",
+        "no_mac",
+    ],
+    deps = [
+        "//xla:autotuning_proto_cc",
+        "//xla:error_spec",
+        "//xla:xla_proto_cc",
+        "//xla/hlo/ir:hlo",
+        "//xla/hlo/testlib:filecheck",
+        "//xla/service/gpu:backend_configs_cc",
+        "//xla/service/gpu/tests:gpu_codegen_test",
+        "//xla/service/gpu/transforms:nest_gemm_fusion",
+        "//xla/stream_executor:device_description",
+        "//xla/tests:xla_internal_test_main",  # fixdeps: keep
+        "//xla/tsl/platform:statusor",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+        "@local_tsl//tsl/platform:path",
+    ],
+)
+
+xla_test(
+    name = "fusion_emitter_legacy_int4_device_test",
+    size = "large",
+    srcs = if_gpu_is_configured(["fusion_emitter_legacy_int4_device_test.cc"]),
     backends = [
         "gpu_a100",
         "gpu_h100",
@@ -987,16 +1015,12 @@ cc_library(
     srcs = ["tma_utils.cc"],
     hdrs = ["tma_utils.h"],
     deps = [
-        "//xla:shape_util",
-        "//xla/codegen:emitter_loc_op_builder",
         "//xla/stream_executor/gpu:tma_metadata",
         "//xla/tsl/platform:statusor",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:IR",
-        "@triton//:TritonDialects",
     ],
 )
 

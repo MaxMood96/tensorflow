@@ -107,8 +107,6 @@ extern const char* const kEigenMatMulS32SymbolName =
     "__xla_cpu_runtime_EigenMatMulS32";
 extern const char* const kEigenBatchMatMulF32SymbolName =
     "__xla_cpu_runtime_EigenBatchMatMulF32";
-extern const char* const kMKLConv2DF32SymbolName =
-    "__xla_cpu_runtime_MKLConv2DF32";
 extern const char* const kACLConv2DF32SymbolName =
     "__xla_cpu_runtime_ACLConv2DF32";
 extern const char* const kACLMatMulF32SymbolName =
@@ -207,7 +205,7 @@ absl::StatusOr<Shape> DecodeSelfDescribingShapeConstant(const void* shape_ptr,
   if (!shape_proto.ParseFromArray(shape_ptr, size_bytes)) {
     return tsl::errors::Internal("Failed parsing the shape proto");
   }
-  Shape shape(shape_proto);
+  TF_ASSIGN_OR_RETURN(Shape shape, Shape::FromProto(shape_proto));
   auto status = ShapeUtil::ValidateShape(shape);
   if (!status.ok()) {
     return status;

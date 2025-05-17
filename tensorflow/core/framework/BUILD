@@ -41,6 +41,7 @@ default_visibility = [
     # copybara:uncomment #internal tuning service,
     # copybara:uncomment "//third_party/odml/experimental:__subpackages__",
     #internal nexus library,
+    #internal headless cuj tests library,
     #internal nexus library tests,
     "//tensorflow/compiler/jit:__subpackages__",
     #internal library,
@@ -848,6 +849,7 @@ tf_cuda_library(
     ],
     visibility = [
         "//learning/gemini/gemax/core/models/gemini3/vision/vision_decoder:__pkg__",
+        "//learning/gemini/gemax/core/models/lsp_inference_staging/vision/vision_decoder:__pkg__",
         "//learning/infra/runtime/experimental/mixed_engine:__subpackages__",
         "//tensorflow:__pkg__",
         "//tensorflow/core:__pkg__",

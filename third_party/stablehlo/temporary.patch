@@ -1,58 +1,64 @@
-diff --ruN a/stablehlo/stablehlo/conversions/linalg/transforms/TypeConversion.cpp b/stablehlo/stablehlo/conversions/linalg/transforms/TypeConversion.cpp
---- stablehlo/stablehlo/conversions/linalg/transforms/TypeConversion.cpp
-+++ stablehlo/stablehlo/conversions/linalg/transforms/TypeConversion.cpp
-@@ -61,7 +61,6 @@
- }  // namespace
+diff --ruN a/stablehlo/stablehlo/dialect/StablehloOps.cpp b/stablehlo/stablehlo/dialect/StablehloOps.cpp
+--- stablehlo/stablehlo/dialect/StablehloOps.cpp
++++ stablehlo/stablehlo/dialect/StablehloOps.cpp
+@@ -511,12 +511,10 @@
+ void CustomCallOp::getEffects(
+     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>&
+         effects) {
+-  // Note: `has_side_effect` "defaults" to `false` but isn't required to exist.
+-  // This semantic contradiction means, in practical terms, that the attribute
+-  // won't exist by default but should be *treated* as `false` if missing.
+-  // `getHasSideEffect()` abstracts this nuance away and returns `false` by
+-  // default, whereas `getHasSideEffectAttr()` may return a null attribute.
+-  if (!getHasSideEffect()) return;
++  // CustomCall has "all possible effects" unless the has_side_effect is present
++  // and set to false.
++  auto hasSideEffect = getHasSideEffectAttr();
++  if (hasSideEffect && !hasSideEffect.getValue()) return;
+   effects.emplace_back(MemoryEffects::Allocate::get());
+   effects.emplace_back(MemoryEffects::Free::get());
+   effects.emplace_back(MemoryEffects::Write::get());
+diff --ruN a/stablehlo/stablehlo/dialect/StablehloOps.td b/stablehlo/stablehlo/dialect/StablehloOps.td
+--- stablehlo/stablehlo/dialect/StablehloOps.td
++++ stablehlo/stablehlo/dialect/StablehloOps.td
+@@ -1161,7 +1161,8 @@
+ //===----------------------------------------------------------------------===//
  
- LinalgTypeConverter::LinalgTypeConverter() : RemoveSignTypeConverter() {
--  addArgumentMaterialization(scalarToTensor);
-   addSourceMaterialization(scalarToTensor);
-   addTargetMaterialization(scalarToTensor);
- }
-diff --ruN a/stablehlo/stablehlo/dialect/StablehloAttrs.td b/stablehlo/stablehlo/dialect/StablehloAttrs.td
---- stablehlo/stablehlo/dialect/StablehloAttrs.td
-+++ stablehlo/stablehlo/dialect/StablehloAttrs.td
-@@ -221,7 +221,7 @@
-   );
-   let hasCustomAssemblyFormat = 1;
-   let genVerifyDecl = 1;
--  let constBuilderCall = "ResultAccuracyAttr::get($_builder.getContext(), APFloat(0.0), APFloat(0.0), 0, ResultAccuracyModeAttr::get($_builder.getContext(), $0))";
-+  let constBuilderCall = "::mlir::stablehlo::ResultAccuracyAttr::get($_builder.getContext(), APFloat(0.0), APFloat(0.0), 0, ::mlir::stablehlo::ResultAccuracyModeAttr::get($_builder.getContext(), $0))";
+ def StableHLO_InfeedOp : StableHLO_Op<"infeed", [
+-      MemoryEffects<[MemRead<StableHLO_InfeedResource>]>,
++      MemoryEffects<[MemRead<StableHLO_InfeedResource>,
++                     MemWrite<StableHLO_InfeedResource>]>,
+     ]> {
+   let summary = "Infeed operation";
+   let description = [{
+@@ -1188,7 +1189,8 @@
+ 
+ def StableHLO_OutfeedOp : StableHLO_Op<"outfeed", [
+       DeclareOpInterfaceMethods<InferTypeOpInterface>,
+-      MemoryEffects<[MemWrite<StableHLO_OutfeedResource>]>,
++      MemoryEffects<[MemRead<StableHLO_OutfeedResource>,
++                     MemWrite<StableHLO_OutfeedResource>]>,
+     ]> {
+   let summary = "Outfeed operation";
+   let description = [{
+@@ -1214,7 +1216,8 @@
+ 
+ def StableHLO_SendOp : StableHLO_Op<"send", [
+       DeclareOpInterfaceMethods<InferTypeOpInterface>,
+-      MemoryEffects<[MemWrite<StableHLO_SendResource>]>,
++      MemoryEffects<[MemRead<StableHLO_SendResource>,
++                     MemWrite<StableHLO_SendResource>]>,
+     ]> {
+   let summary = "Send operation";
+   let description = [{
+@@ -1243,7 +1246,8 @@
  }
  
- #endif // STABLEHLO_DIALECT_STABLEHLO_ATTRS
-diff --ruN a/stablehlo/stablehlo/dialect/VhloAttrs.td b/stablehlo/stablehlo/dialect/VhloAttrs.td
---- stablehlo/stablehlo/dialect/VhloAttrs.td
-+++ stablehlo/stablehlo/dialect/VhloAttrs.td
-@@ -102,7 +102,7 @@
- // Corresponds to IntegerConstant from the StableHLO spec.
- def VHLO_IntegerAttrV1 : VHLO_AttrDef<"IntegerV1", "0.9.0", "current"> {
-   let mnemonic = "integer_v1";
--  let parameters = (ins "mlir::Type":$type, "APInt":$value);
-+  let parameters = (ins "mlir::Type":$type, APIntParameter<"">:$value);
-   let genVerifyDecl = 1;
-   let extraClassDefinition = [{
-     LogicalResult IntegerV1Attr::verify(
-diff --ruN a/stablehlo/stablehlo/dialect/VhloTypes.cpp b/stablehlo/stablehlo/dialect/VhloTypes.cpp
---- stablehlo/stablehlo/dialect/VhloTypes.cpp
-+++ stablehlo/stablehlo/dialect/VhloTypes.cpp
-@@ -333,7 +333,6 @@
- void VhloTypeConverter::addUnrealizedMaterializations() {
-   addTargetMaterialization(materializeIllegalCast);
-   addSourceMaterialization(materializeIllegalCast);
--  addArgumentMaterialization(materializeIllegalCast);
- }
- 
- namespace {
-diff --ruN a/stablehlo/stablehlo/transforms/conversions/TypeConversion.cpp b/stablehlo/stablehlo/transforms/conversions/TypeConversion.cpp
---- stablehlo/stablehlo/transforms/conversions/TypeConversion.cpp
-+++ stablehlo/stablehlo/transforms/conversions/TypeConversion.cpp
-@@ -77,7 +77,6 @@
-   addConversion(convertInteger);
-   addConversion(convertShapedType);
- 
--  addArgumentMaterialization(materializeCastFromIllegal);
-   addSourceMaterialization(materializeCastToIllegal);
-   addTargetMaterialization(materializeCastFromIllegal);
- }
+ def StableHLO_RecvOp : StableHLO_Op<"recv", [
+-      MemoryEffects<[MemRead<StableHLO_RecvResource>]>
++      MemoryEffects<[MemRead<StableHLO_RecvResource>,
++                     MemWrite<StableHLO_RecvResource>]>,
+     ]> {
+   let summary = "Recv operation";
+   let description = [{
 
