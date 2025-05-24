@@ -20,34 +20,37 @@ limitations under the License.
 #include <utility>
 
 #include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/OpDefinition.h"  // from @llvm-project
+#include "mlir/IR/PatternMatch.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/quantization/common/ir/QuantOps.h"
-#include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_utils.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Support/TypeID.h"  // from @llvm-project
-#include "mlir/IR/PatternMatch.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
-#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/quantization/common/tf_quantization_lib/tf_quantization_traits.h"
+#include "tensorflow/compiler/mlir/quantization/common/tf_quantization_lib/tf_quantization_utils.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"  // IWYU pragma: keep
 
 //===----------------------------------------------------------------------===//
 // The post-quantize Passes.
 //
 namespace mlir {
-namespace quant {
+namespace tf_quant {
 namespace {
 
 // Applies all the clean up steps after quantization.
-class TFPostQuantizePass
-    : public PassWrapper<TFPostQuantizePass, OperationPass<func::FuncOp>> {
+class PostQuantizePass
+    : public PassWrapper<PostQuantizePass, OperationPass<func::FuncOp>> {
  public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TFPostQuantizePass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PostQuantizePass)
 
   // Constructor used by the PassRegistration. This will remove the adaptor ops.
-  explicit TFPostQuantizePass() = default;
+  explicit PostQuantizePass() = default;
 
   StringRef getArgument() const final {
     // This is the argument used to refer to the pass in
@@ -79,8 +82,8 @@ struct RemoveVolatileOps
   LogicalResult matchAndRewrite(mlir::quant::ir::DequantizeCastOp op,
                                 PatternRewriter& rewriter) const override {
     auto input_op = op.getArg().getDefiningOp();
-    if (auto q = llvm::dyn_cast_or_null<mlir::quant::ir::QuantizeCastOp>(
-      input_op)) {
+    if (auto q =
+            llvm::dyn_cast_or_null<mlir::quant::ir::QuantizeCastOp>(input_op)) {
       if (!q->getAttr(kVolatileOpAttrName)) return failure();
 
       if (remove_volatile_ops_type == kPreserveInputsAndOutputs) {
@@ -133,7 +136,7 @@ class RemoveRedundantScast
 
 #include "tensorflow/compiler/mlir/quantization/tensorflow/passes/tf_post_quantize.inc"
 
-void TFPostQuantizePass::runOnOperation() {
+void PostQuantizePass::runOnOperation() {
   RewritePatternSet patterns(&getContext());
   auto func = getOperation();
   auto* ctx = func.getContext();
@@ -148,11 +151,11 @@ void TFPostQuantizePass::runOnOperation() {
 }  // namespace
 
 // Creates an instance of the TensorFlow dialect PostQuantize pass.
-std::unique_ptr<OperationPass<func::FuncOp>> CreateTFPostQuantizePass() {
-  return std::make_unique<TFPostQuantizePass>();
+std::unique_ptr<OperationPass<func::FuncOp>> CreatePostQuantizePass() {
+  return std::make_unique<PostQuantizePass>();
 }
 
-static PassRegistration<TFPostQuantizePass> pass;
+static PassRegistration<PostQuantizePass> pass;
 
-}  // namespace quant
+}  // namespace tf_quant
 }  // namespace mlir
