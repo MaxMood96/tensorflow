@@ -125,6 +125,10 @@ build --config=short_logs
 # TODO(mihaimaruseac): Document this option or remove if no longer needed
 build --config=v2
 
+# Precompiling results in some action conflicts. Disable it for now until
+# the problematic targets are fixed.
+build --@rules_python//python/config_settings:precompile=force_disabled
+
 # TF now has `cc_shared_library` targets, so it needs the experimental flag
 # TODO(rostam): Remove when `cc_shared_library` is enabled by default
 common --experimental_cc_shared_library
@@ -437,12 +441,8 @@ build:windows --dynamic_mode=off
 
 # Default paths for TF_SYSTEM_LIBS
 build:linux --define=PREFIX=/usr
-build:linux --define=LIBDIR=$(PREFIX)/lib
-build:linux --define=INCLUDEDIR=$(PREFIX)/include
 build:linux --define=PROTOBUF_INCLUDE_PATH=$(PREFIX)/include
 build:macos --define=PREFIX=/usr
-build:macos --define=LIBDIR=$(PREFIX)/lib
-build:macos --define=INCLUDEDIR=$(PREFIX)/include
 build:macos --define=PROTOBUF_INCLUDE_PATH=$(PREFIX)/include
 # TF_SYSTEM_LIBS do not work on windows.
 
@@ -622,6 +622,7 @@ common:rbe_linux_cpu_old --remote_instance_name=projects/tensorflow-testing/inst
 
 build:rbe_linux_cuda --config=cuda_clang_official
 build:rbe_linux_cuda --config=rbe_linux_cpu
+build:rbe_linux_cuda --repo_env=USE_CUDA_TAR_ARCHIVE_FILES=1
 # For Remote build execution -- GPU configuration
 build:rbe_linux_cuda --repo_env=REMOTE_GPU_TESTING=1
 

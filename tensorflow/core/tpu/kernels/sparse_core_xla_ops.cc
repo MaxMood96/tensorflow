@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -499,6 +500,10 @@ class XlaSparseDenseMatmulCustomCombinerOnTcWithCsrInputOp
 
     xla::FrontendAttributes tc_frontend_attributes;
     xla::FrontendAttributes sc_frontend_attributes;
+    xla::FrontendAttributes tuple_frontend_attributes;
+
+    tuple_frontend_attributes.mutable_map()->insert(
+        {"_xla_compute_type", "sparse"});
 
     sc_frontend_attributes.mutable_map()->insert(
         {"_xla_compute_type", "sparse"});
@@ -548,14 +553,19 @@ class XlaSparseDenseMatmulCustomCombinerOnTcWithCsrInputOp
         xla::ShapeUtil::MakeTupleShape(
             {valencies_shape, vectors_shape, gains_shape}));
 
+    // Emit get-tuple-element with the sparse core device frontend attribute.
+    // This is necessary for XLA to fuse the SparseCore custom call and the
+    // gte's to avoid accidentally introducing nested tuples.
+    builder->SetFrontendAttributes(tuple_frontend_attributes);
+
+    xla::XlaOp valencies = xla::GetTupleElement(sc_lookup_result_tuple, 0);
+    xla::XlaOp vectors = xla::GetTupleElement(sc_lookup_result_tuple, 1);
+
     // Emit the custom combiner computation into an HLO computation.
     OP_REQUIRES_VALUE(xla::XlaComputation custom_combiner_tc_computation, ctx,
                       BuildTcCustomCombinerComputation(ctx, feature_width));
 
     builder->SetFrontendAttributes(tc_frontend_attributes);
-
-    xla::XlaOp valencies = xla::GetTupleElement(sc_lookup_result_tuple, 0);
-    xla::XlaOp vectors = xla::GetTupleElement(sc_lookup_result_tuple, 1);
 
     std::vector<xla::XlaOp> tc_combiner_args = {valencies, vectors};
     if (num_weights_ > 0) {
@@ -717,7 +727,7 @@ class XlaSparseDenseMatmulGradWithCsrInputBase : public XlaOpKernel {
     builder->SetFrontendAttributes(tuple_frontend_attributes);
 
     // Updated embedding table.
-    for (int i = 0; i < tables_shape.tuple_shapes_size(); ++i) {
+    for (int i = 0; i < tables_shape.tuple_shapes().size(); ++i) {
       ctx->SetOutput(i, xla::GetTupleElement(updated_tables, i));
     }
 
@@ -744,6 +754,7 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
     const NameAttrList* name_attr;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("custom_computation", &name_attr));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("table_name", &table_name_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("T", &table_dtype_));
 
     // Try to get the number of sparsecores per chip from topology. And fall
     // back to the attribute if the topology is not available.
@@ -825,13 +836,23 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
 
     std::vector<XlaCompiler::Argument> arguments(num_arguments);
 
-    // For all the arguments, we use the float type and the shape is
+    // For tables and slot variables, we use the derived type and the shape is
     // {1, feature_width}.
+    xla::PrimitiveType table_primitive_type;
+    OP_REQUIRES_OK(
+        ctx, DataTypeToPrimitiveType(table_dtype_, &table_primitive_type));
+
     for (int32_t i = 0; i < num_arguments; ++i) {
       arguments[i].kind = XlaCompiler::Argument::kParameter;
-      arguments[i].type = DT_FLOAT;
-      arguments[i].shape =
-          xla::ShapeUtil::MakeShape(xla::F32, {1, feature_width});
+      if (i > 0 && i < tables_inputs.size() + 1) {
+        arguments[i].type = table_dtype_;
+        arguments[i].shape =
+            xla::ShapeUtil::MakeShape(table_primitive_type, {1, feature_width});
+      } else {
+        arguments[i].type = DT_FLOAT;
+        arguments[i].shape =
+            xla::ShapeUtil::MakeShape(xla::F32, {1, feature_width});
+      }
     }
 
     CHECK_OK(compiler->CompileFunction(options, custom_computation_, arguments,
@@ -860,7 +881,8 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
     xla_tables_shapes.reserve(tables_shapes.size());
     for (const auto& table_shape : tables_shapes) {
       xla_tables_shapes.push_back(xla::ShapeUtil::MakeShape(
-          xla::F32, {table_shape.dim_size(0), table_shape.dim_size(1)}));
+          table_primitive_type,
+          {table_shape.dim_size(0), table_shape.dim_size(1)}));
     }
 
     xla::Shape tables_shape = xla::ShapeUtil::MakeTupleShape(xla_tables_shapes);
@@ -895,7 +917,7 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
     builder->SetFrontendAttributes(tuple_frontend_attributes);
 
     // Updated embedding table.
-    for (int i = 0; i < tables_shape.tuple_shapes_size(); ++i) {
+    for (int i = 0; i < tables_shape.tuple_shapes().size(); ++i) {
       ctx->SetOutput(i, xla::GetTupleElement(updated_tables, i));
     }
 
@@ -904,6 +926,7 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
 
  private:
   std::string table_name_;
+  DataType table_dtype_;
   NameAttrList custom_computation_;
   int64_t num_sparsecores_per_device_;
   XlaSparseDenseMatmulGradWithCsrInputOp(
@@ -1200,12 +1223,12 @@ class XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputBase
     // Get the shape of the gradient.
     OP_REQUIRES_VALUE(xla::Shape activation_shape, ctx,
                       ctx->InputXlaShape("activation_gradients"));
-    OP_REQUIRES(
-        ctx,
-        activation_shape.is_static() && activation_shape.dimensions_size() == 2,
-        absl::InvalidArgumentError(absl::StrCat(
-            "activations input has non static or non-rank 2 shape: ",
-            activation_shape.ToString())));
+    OP_REQUIRES(ctx,
+                activation_shape.is_static() &&
+                    activation_shape.dimensions().size() == 2,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "activations input has non static or non-rank 2 shape: ",
+                    activation_shape.ToString())));
     OP_REQUIRES_VALUE(int64_t num_sparsecores_per_device, ctx,
                       GetSparseCoresPerLogicalDevice());
     int64_t num_samples_per_chip = activation_shape.dimensions(0);

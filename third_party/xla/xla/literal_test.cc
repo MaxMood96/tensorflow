@@ -131,7 +131,16 @@ using FloatTypes = ::testing::Types<float, half, bfloat16, tsl::float4_e2m1fn,
                                     tsl::float8_e4m3fnuz, tsl::float8_e5m2,
                                     tsl::float8_e5m2fnuz, tsl::float8_e8m0fnu>;
 
-TYPED_TEST_SUITE(LiteralUtilFloatTest, FloatTypes);
+class FloatTypeNames {
+ public:
+  template <typename T>
+  static std::string GetName(int) {
+    PrimitiveType type = primitive_util::NativeToPrimitiveType<T>();
+    return primitive_util::LowercasePrimitiveTypeName(type);
+  }
+};
+
+TYPED_TEST_SUITE(LiteralUtilFloatTest, FloatTypes, FloatTypeNames);
 
 TEST_F(LiteralUtilTest, LiteralScalarToString) {
   auto true_lit = LiteralUtil::CreateR0<bool>(true);
@@ -552,7 +561,8 @@ TEST_F(LiteralUtilTest, DifferentLayoutInEquality) {
 }
 
 TEST_F(LiteralUtilTest, CreateWithoutLayout) {
-  Shape default_layout_shape = ShapeUtil::MakeShape(F32, {2, 1});
+  Shape default_layout_shape =
+      ShapeUtil::MakeValidatedShape(F32, {2, 1}).value();
   Shape no_layout_shape = default_layout_shape;
   no_layout_shape.clear_layout();
   auto literal =
@@ -562,10 +572,12 @@ TEST_F(LiteralUtilTest, CreateWithoutLayout) {
 }
 
 TEST_F(LiteralUtilTest, CreateWithoutLayout_Tuple) {
-  Shape default_layout_shape = ShapeUtil::MakeShape(F32, {2, 1});
+  Shape default_layout_shape =
+      ShapeUtil::MakeValidatedShape(F32, {2, 1}).value();
   Shape no_layout_shape = default_layout_shape;
   no_layout_shape.clear_layout();
-  Shape literal_shape = ShapeUtil::MakeTupleShape({no_layout_shape});
+  Shape literal_shape =
+      ShapeUtil::MakeValidatedTupleShape({no_layout_shape}).value();
   auto literal =
       LiteralBase::CreateFromShapeWithUndeterminedLeafArrays(literal_shape);
   // The default Layout should have been added back.
@@ -1052,7 +1064,8 @@ TEST_F(LiteralUtilTest, ToStaticR2) {
   original.SetDynamicSize(1, 1);
   // F32[2, 1]
   auto static_literal = original.ToStatic();
-  EXPECT_EQ(static_literal.shape(), ShapeUtil::MakeShape(F32, {2, 1}));
+  EXPECT_EQ(static_literal.shape(),
+            ShapeUtil::MakeValidatedShape(F32, {2, 1}).value());
   EXPECT_TRUE(static_literal.shape().is_static());
 
   static_literal.EachCell<float>(
@@ -1065,7 +1078,8 @@ TEST_F(LiteralUtilTest, ToBoundedDynamicR2) {
   // F32[2, 1]
   auto original = LiteralUtil::CreateR2<float>({{1}, {4}});
   // F32[2, <=3] (2, 1)
-  auto dynamic_shape = ShapeUtil::MakeShape(F32, {2, 3}, {false, true});
+  auto dynamic_shape =
+      ShapeUtil::MakeValidatedShape(F32, {2, 3}, {false, true}).value();
   auto dynamic_literal = original.ToBoundedDynamic(dynamic_shape);
   EXPECT_EQ(dynamic_literal.shape(), dynamic_shape);
 
@@ -1233,35 +1247,35 @@ TEST_F(LiteralUtilTest, SliceR2DynamicOutOfBound) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR1S64) {
-  Literal output(ShapeUtil::MakeShape(S64, {1}));
+  Literal output(ShapeUtil::MakeValidatedShape(S64, {1}).value());
   output.PopulateR1<int64_t>({77});
   auto expected = LiteralUtil::CreateR1<int64_t>({77});
   EXPECT_EQ(output, expected);
 }
 
 TEST_F(LiteralUtilTest, PopulateR1U64) {
-  Literal output(ShapeUtil::MakeShape(U64, {2}));
+  Literal output(ShapeUtil::MakeValidatedShape(U64, {2}).value());
   output.PopulateR1<uint64_t>({{77, 88}});
   auto expected = LiteralUtil::CreateR1<uint64_t>({{77, 88}});
   EXPECT_EQ(output, expected);
 }
 
 TEST_F(LiteralUtilTest, PopulateR1C64) {
-  Literal output(ShapeUtil::MakeShape(C64, {1}));
+  Literal output(ShapeUtil::MakeValidatedShape(C64, {1}).value());
   output.PopulateR1<complex64>({{77, 88}});
   auto expected = LiteralUtil::CreateR1<complex64>({{77, 88}});
   EXPECT_EQ(output, expected);
 }
 
 TEST_F(LiteralUtilTest, PopulateR1C128) {
-  Literal output(ShapeUtil::MakeShape(C128, {1}));
+  Literal output(ShapeUtil::MakeValidatedShape(C128, {1}).value());
   output.PopulateR1<complex128>({{77, 88}});
   auto expected = LiteralUtil::CreateR1<complex128>({{77, 88}});
   EXPECT_EQ(output, expected);
 }
 
 TEST_F(LiteralUtilTest, PopulateR2C64) {
-  Literal output(ShapeUtil::MakeShape(C64, {2, 2}));
+  Literal output(ShapeUtil::MakeValidatedShape(C64, {2, 2}).value());
   output.PopulateR2<complex64>({{{7, 8}, {9, 10}}, {{1, 2}, {3, 4}}});
   auto expected =
       LiteralUtil::CreateR2<complex64>({{{7, 8}, {9, 10}}, {{1, 2}, {3, 4}}});
@@ -1296,21 +1310,21 @@ TYPED_TEST(LiteralUtilFloatTest, PopulateWithValueR2Float) {
 }
 
 TEST_F(LiteralUtilTest, PopulateWithValueR1S64) {
-  Literal output(ShapeUtil::MakeShape(S64, {3}));
+  Literal output(ShapeUtil::MakeValidatedShape(S64, {3}).value());
   output.PopulateWithValue<int64_t>(-7);
   auto expected = LiteralUtil::CreateR1<int64_t>({-7, -7, -7});
   EXPECT_EQ(output, expected);
 }
 
 TEST_F(LiteralUtilTest, PopulateWithValueR2U64) {
-  Literal output(ShapeUtil::MakeShape(U64, {2, 2}));
+  Literal output(ShapeUtil::MakeValidatedShape(U64, {2, 2}).value());
   output.PopulateWithValue<uint64_t>(42);
   auto expected = LiteralUtil::CreateR2<uint64_t>({{42, 42}, {42, 42}});
   EXPECT_EQ(output, expected);
 }
 
 TEST_F(LiteralUtilTest, PopulateWithValueR2C64) {
-  Literal output(ShapeUtil::MakeShape(C64, {2, 2}));
+  Literal output(ShapeUtil::MakeValidatedShape(C64, {2, 2}).value());
   output.PopulateWithValue<complex64>({4, 2});
   auto expected =
       LiteralUtil::CreateR2<complex64>({{{4, 2}, {4, 2}}, {{4, 2}, {4, 2}}});
@@ -1318,7 +1332,7 @@ TEST_F(LiteralUtilTest, PopulateWithValueR2C64) {
 }
 
 TEST_F(LiteralUtilTest, PopulateWithValueR2C128) {
-  Literal output(ShapeUtil::MakeShape(C128, {2, 2}));
+  Literal output(ShapeUtil::MakeValidatedShape(C128, {2, 2}).value());
   output.PopulateWithValue<complex128>({4, 2});
   auto expected =
       LiteralUtil::CreateR2<complex128>({{{4, 2}, {4, 2}}, {{4, 2}, {4, 2}}});
@@ -1396,7 +1410,7 @@ TEST_F(LiteralUtilTest, CopyFromScalars) {
 }
 
 TEST_F(LiteralUtilTest, CopyFromAndToZeroElement) {
-  const Shape empty_r1_shape = ShapeUtil::MakeShape(F32, {0});
+  const Shape empty_r1_shape = ShapeUtil::MakeValidatedShape(F32, {0}).value();
   const auto const_nine = LiteralUtil::CreateR1<float>({9});
   const auto const_empty = Literal::CreateFromShape(empty_r1_shape);
 
@@ -1506,7 +1520,8 @@ TEST_F(LiteralUtilTest, F16) {
   // Verify that the internal data views are consistent and that they
   // are in little endian format
   // TODO - modify if we make the data format machine endianness dependent
-  Literal m1 = Literal::CreateFromShape(ShapeUtil::MakeShape(F16, {2, 2}));
+  Literal m1 = Literal::CreateFromShape(
+      ShapeUtil::MakeValidatedShape(F16, {2, 2}).value());
   const char* const d1 =
       tsl::safe_reinterpret_cast<const char*>(m1.data<half>().data());
   EXPECT_EQ(d1[0], 0);
@@ -1858,26 +1873,26 @@ TYPED_TEST(LiteralUtilFloatTest, ConvertIfTypesMatchF8) {
     GTEST_SKIP() << "Skipping test for non F8 types";
   }
   auto s8 = LiteralUtil::CreateR2WithLayout<int8_t>(
-      {{0, 1}, {2, 3}}, LiteralUtilTest::layout_r2_dim0major_);
+      {{1, 2}, {4, 8}}, LiteralUtilTest::layout_r2_dim0major_);
   auto bf16 = LiteralUtil::CreateR2WithLayout<bfloat16>(
-      {{bfloat16(0.), bfloat16(1.)}, {bfloat16(2.), bfloat16(3.)}},
+      {{bfloat16(1.), bfloat16(2.)}, {bfloat16(4.), bfloat16(8.)}},
       LiteralUtilTest::layout_r2_dim0major_);
   auto f32 = LiteralUtil::CreateR2WithLayout<float>(
-      {{0., 1.}, {2., 3.}}, LiteralUtilTest::layout_r2_dim0major_);
+      {{1., 2.}, {4., 8.}}, LiteralUtilTest::layout_r2_dim0major_);
   auto c128 = LiteralUtil::CreateR2WithLayout<complex128>(
-      {{0., 1.}, {2., 3.}}, LiteralUtilTest::layout_r2_dim0major_);
+      {{1., 2.}, {4., 8.}}, LiteralUtilTest::layout_r2_dim0major_);
   // Let's also use a couple of popular F8 types as sources for conversion
   using f8e5m2_t = tsl::float8_e5m2;
   auto f8e5m2 = LiteralUtil::CreateR2WithLayout<f8e5m2_t>(
-      {{f8e5m2_t{0.}, f8e5m2_t{1.}}, {f8e5m2_t{2.}, f8e5m2_t{3.}}},
+      {{f8e5m2_t{1.}, f8e5m2_t{2.}}, {f8e5m2_t{4.}, f8e5m2_t{8.}}},
       LiteralUtilTest::layout_r2_dim0major_);
   using e4m3fn_t = tsl::float8_e4m3fn;
   auto f8e4m3fn = LiteralUtil::CreateR2WithLayout<e4m3fn_t>(
-      {{e4m3fn_t{0.}, e4m3fn_t{1.}}, {e4m3fn_t{2.}, e4m3fn_t{3.}}},
+      {{e4m3fn_t{1.}, e4m3fn_t{2.}}, {e4m3fn_t{4.}, e4m3fn_t{8.}}},
       LiteralUtilTest::layout_r2_dim0major_);
 
   auto f8 = LiteralUtil::CreateR2WithLayout<TypeParam>(
-      {{TypeParam{0.}, TypeParam{1.}}, {TypeParam{2.}, TypeParam{3.}}},
+      {{TypeParam{1.}, TypeParam{2.}}, {TypeParam{4.}, TypeParam{8.}}},
       LiteralUtilTest::layout_r2_dim0major_);
 
   Literal conv;
@@ -1983,7 +1998,8 @@ TEST_F(LiteralUtilTest, ToProto_f16) {
   EXPECT_EQ(4, m.data<half>().size());
 
   LiteralProto p = m.ToProto();
-  EXPECT_EQ(4, ShapeUtil::ElementsIn(Shape(p.shape())));
+  TF_ASSERT_OK_AND_ASSIGN(Shape shape, Shape::FromProto(p.shape()));
+  EXPECT_EQ(4, ShapeUtil::ElementsIn(shape));
   EXPECT_EQ(8, p.f16s().size());
   const char* d = p.f16s().data();
   EXPECT_EQ(d[0], 0);
@@ -2098,7 +2114,7 @@ TEST_F(LiteralUtilTest, LiteralSliceOfALiteralSlice) {
 
 TEST_F(LiteralUtilTest, BorrowingLiteralFromOneBufferPtr) {
   std::vector<int64_t> int64_values = {1, 2, 3};
-  const Shape literal_shape = ShapeUtil::MakeShape(S64, {3});
+  const Shape literal_shape = ShapeUtil::MakeValidatedShape(S64, {3}).value();
 
   BorrowingLiteral literal(
       tsl::safe_reinterpret_cast<const char*>(int64_values.data()),
@@ -2111,10 +2127,11 @@ TEST_F(LiteralUtilTest, BorrowingLiteralFromOneBufferPtr) {
 
 TEST_F(LiteralUtilTest, BorrowingLiteralFromMultipleBufferPtrs) {
   std::vector<int64_t> one_two_three = {1, 2, 3};
-  const Shape one_two_three_shape = ShapeUtil::MakeShape(S64, {3});
+  const Shape one_two_three_shape =
+      ShapeUtil::MakeValidatedShape(S64, {3}).value();
 
   std::vector<int64_t> hundred = {100};
-  const Shape hundred_shape = ShapeUtil::MakeShape(S64, {1});
+  const Shape hundred_shape = ShapeUtil::MakeValidatedShape(S64, {1}).value();
 
   std::vector<const char*> src_buf_ptrs;
   src_buf_ptrs.emplace_back(
@@ -2123,7 +2140,8 @@ TEST_F(LiteralUtilTest, BorrowingLiteralFromMultipleBufferPtrs) {
       tsl::safe_reinterpret_cast<const char*>(hundred.data()));
   auto literal_tuple = BorrowingLiteral(
       src_buf_ptrs,
-      ShapeUtil::MakeTupleShape({one_two_three_shape, hundred_shape}));
+      ShapeUtil::MakeValidatedTupleShape({one_two_three_shape, hundred_shape})
+          .value());
 
   EXPECT_EQ(
       literal_tuple.Get<int64_t>(/*multi_index=*/{0}, /*shape_index=*/{0}), 1);
@@ -2141,9 +2159,10 @@ TEST_F(LiteralUtilTest, BorrowingLiteralFromMultipleBufferPtrs) {
 TEST_F(LiteralUtilTest, BorrowingLiteralFromShapeTree) {
   std::vector<float> data = {1.0, 2.0, 3.0};
 
-  Shape shape = ShapeUtil::MakeShape(PrimitiveType::F32, {3});
-  Shape tuple = ShapeUtil::MakeTupleShape({shape, shape});
-  Shape nested_tuple = ShapeUtil::MakeTupleShape({tuple, shape});
+  Shape shape = ShapeUtil::MakeValidatedShape(PrimitiveType::F32, {3}).value();
+  Shape tuple = ShapeUtil::MakeValidatedTupleShape({shape, shape}).value();
+  Shape nested_tuple =
+      ShapeUtil::MakeValidatedTupleShape({tuple, shape}).value();
 
   ShapeTree<const char*> ptr_tree(nested_tuple);
   *ptr_tree.mutable_element({0, 0}) =
@@ -2163,9 +2182,10 @@ TEST_F(LiteralUtilTest, BorrowingLiteralFromShapeTree) {
 TEST_F(LiteralUtilTest, MutableBorrowingLiteralFromShapeTree) {
   std::vector<float> data = {1.0, 2.0, 3.0};
 
-  Shape shape = ShapeUtil::MakeShape(PrimitiveType::F32, {3});
-  Shape tuple = ShapeUtil::MakeTupleShape({shape, shape});
-  Shape nested_tuple = ShapeUtil::MakeTupleShape({tuple, shape});
+  Shape shape = ShapeUtil::MakeValidatedShape(PrimitiveType::F32, {3}).value();
+  Shape tuple = ShapeUtil::MakeValidatedTupleShape({shape, shape}).value();
+  Shape nested_tuple =
+      ShapeUtil::MakeValidatedTupleShape({tuple, shape}).value();
 
   ShapeTree<char*> ptr_tree(nested_tuple);
   *ptr_tree.mutable_element({0, 0}) =
@@ -2186,8 +2206,8 @@ TEST_F(LiteralUtilTest, LiteralMove) {
   Literal matrix = LiteralUtil::CreateR2<float>({{1.0, 2.0}, {3.0, 4.0}});
   Literal literal(std::move(matrix));
 
-  EXPECT_TRUE(
-      ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {2, 2}), literal.shape()));
+  EXPECT_TRUE(ShapeUtil::Equal(
+      ShapeUtil::MakeValidatedShape(F32, {2, 2}).value(), literal.shape()));
   EXPECT_EQ(literal.Get<float>({0, 0}), 1.0);
   EXPECT_EQ(literal.Get<float>({0, 1}), 2.0);
   EXPECT_EQ(literal.Get<float>({1, 0}), 3.0);
@@ -2214,8 +2234,8 @@ TEST_F(LiteralUtilTest, DecomposeTuple) {
 
   ASSERT_EQ(elements.size(), 3);
 
-  EXPECT_TRUE(ShapeUtil::Compatible(elements[0].shape(),
-                                    ShapeUtil::MakeShape(S32, {2, 2})));
+  EXPECT_TRUE(ShapeUtil::Compatible(
+      elements[0].shape(), ShapeUtil::MakeValidatedShape(S32, {2, 2}).value()));
   EXPECT_EQ(elements[0].Get<int32_t>({0, 0}), 1);
   EXPECT_EQ(elements[0].Get<int32_t>({0, 1}), 2);
   EXPECT_EQ(elements[0].Get<int32_t>({1, 0}), 3);
@@ -2223,9 +2243,10 @@ TEST_F(LiteralUtilTest, DecomposeTuple) {
 
   EXPECT_TRUE(ShapeUtil::Compatible(
       elements[1].shape(),
-      ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(S32, {}),
-                                 ShapeUtil::MakeShape(F64, {2}),
-                                 ShapeUtil::MakeNil()})));
+      ShapeUtil::MakeValidatedTupleShape({ShapeUtil::MakeShape(S32, {}),
+                                          ShapeUtil::MakeShape(F64, {2}),
+                                          ShapeUtil::MakeNil()})
+          .value()));
   EXPECT_EQ(elements[1].Get<int32_t>({}, /*shape_index=*/{0}), 42);
   EXPECT_EQ(elements[1].Get<double>({0}, /*shape_index=*/{1}), 23.0);
   EXPECT_EQ(elements[1].Get<double>({1}, /*shape_index=*/{1}), 44.0);
@@ -2278,8 +2299,8 @@ TEST_F(LiteralUtilTest, LiteralMoveAssignment) {
   Literal matrix = LiteralUtil::CreateR2<float>({{1.0, 2.0}, {3.0, 4.0}});
   literal = std::move(matrix);
 
-  EXPECT_TRUE(
-      ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {2, 2}), literal.shape()));
+  EXPECT_TRUE(ShapeUtil::Equal(
+      ShapeUtil::MakeValidatedShape(F32, {2, 2}).value(), literal.shape()));
   EXPECT_EQ(literal.Get<float>({0, 0}), 1.0);
   EXPECT_EQ(literal.Get<float>({0, 1}), 2.0);
   EXPECT_EQ(literal.Get<float>({1, 0}), 3.0);
@@ -2315,20 +2336,24 @@ TEST_F(LiteralUtilTest, GetSetTuple) {
 
 TEST_F(LiteralUtilTest, CreateFromShapeZeroInitialized) {
   // Literals constructed using CreateFromShape should be zero initialized.
-  Literal scalar_f32 = Literal::CreateFromShape(ShapeUtil::MakeShape(F32, {}));
+  Literal scalar_f32 =
+      Literal::CreateFromShape(ShapeUtil::MakeValidatedShape(F32, {}).value());
   EXPECT_EQ(scalar_f32.Get<float>({}), 0.0);
   EXPECT_TRUE(scalar_f32.IsAll(0));
 
-  Literal vector_s32 = Literal::CreateFromShape(ShapeUtil::MakeShape(S32, {3}));
+  Literal vector_s32 =
+      Literal::CreateFromShape(ShapeUtil::MakeValidatedShape(S32, {3}).value());
   EXPECT_EQ(vector_s32.Get<int32_t>({0}), 0);
   EXPECT_EQ(vector_s32.Get<int32_t>({1}), 0);
   EXPECT_EQ(vector_s32.Get<int32_t>({2}), 0);
   EXPECT_TRUE(vector_s32.IsAll(0));
 
-  Literal tuple = Literal::CreateFromShape(ShapeUtil::MakeTupleShape(
-      {ShapeUtil::MakeShape(F64, {}), ShapeUtil::MakeShape(PRED, {2}),
-       ShapeUtil::MakeShape(U64, {2, 1}), ShapeUtil::MakeShape(C64, {}),
-       ShapeUtil::MakeShape(C128, {})}));
+  Literal tuple = Literal::CreateFromShape(
+      ShapeUtil::MakeValidatedTupleShape(
+          {ShapeUtil::MakeShape(F64, {}), ShapeUtil::MakeShape(PRED, {2}),
+           ShapeUtil::MakeShape(U64, {2, 1}), ShapeUtil::MakeShape(C64, {}),
+           ShapeUtil::MakeShape(C128, {})})
+          .value());
 
   EXPECT_EQ(tuple.Get<double>({}, {0}), 0.0);
   EXPECT_EQ(tuple.Get<bool>({0}, {1}), false);
@@ -2421,7 +2446,8 @@ TEST_F(LiteralUtilTest, ProtoRoundTrip) {
 TEST_F(LiteralUtilTest, InvalidProtoNoValues) {
   // Proto contains a shape, but no values.
   LiteralProto proto;
-  *proto.mutable_shape() = ShapeUtil::MakeShape(F32, {3}).ToProto();
+  *proto.mutable_shape() =
+      ShapeUtil::MakeValidatedShape(F32, {3}).value().ToProto();
   absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(),
@@ -2431,7 +2457,8 @@ TEST_F(LiteralUtilTest, InvalidProtoNoValues) {
 TEST_F(LiteralUtilTest, ValidProtoNoValues) {
   // Proto contains a shape, but no values.
   LiteralProto proto;
-  *proto.mutable_shape() = ShapeUtil::MakeShape(F32, {3}).ToProto();
+  *proto.mutable_shape() =
+      ShapeUtil::MakeValidatedShape(F32, {3}).value().ToProto();
   absl::Status status =
       Literal::CreateFromProto(proto, /*prohibit_empty_literal=*/false)
           .status();
@@ -2466,7 +2493,8 @@ TEST_F(LiteralUtilTest, InvalidProtoNoShape) {
 TEST_F(LiteralUtilTest, InvalidProtoWrongContainer) {
   // Proto contains values in wrong container.
   LiteralProto proto;
-  *proto.mutable_shape() = ShapeUtil::MakeShape(F32, {3}).ToProto();
+  *proto.mutable_shape() =
+      ShapeUtil::MakeValidatedShape(F32, {3}).value().ToProto();
   proto.add_preds(false);
   proto.add_preds(true);
   proto.add_preds(false);
@@ -2479,7 +2507,8 @@ TEST_F(LiteralUtilTest, InvalidProtoWrongContainer) {
 TEST_F(LiteralUtilTest, InvalidProtoTooFewValues) {
   // Proto contains too few values.
   LiteralProto proto;
-  *proto.mutable_shape() = ShapeUtil::MakeShape(F32, {42, 2}).ToProto();
+  *proto.mutable_shape() =
+      ShapeUtil::MakeValidatedShape(F32, {42, 2}).value().ToProto();
   proto.add_f32s(1.0);
   proto.add_f32s(2.0);
   proto.add_f32s(3.0);
@@ -2492,7 +2521,8 @@ TEST_F(LiteralUtilTest, InvalidProtoTooFewValues) {
 TEST_F(LiteralUtilTest, InvalidProtoTooManyValues) {
   // Proto contains too many values.
   LiteralProto proto;
-  *proto.mutable_shape() = ShapeUtil::MakeShape(S32, {2}).ToProto();
+  *proto.mutable_shape() =
+      ShapeUtil::MakeValidatedShape(S32, {2}).value().ToProto();
   proto.add_s32s(42);
   proto.add_s32s(-10);
   proto.add_s32s(100);
@@ -2505,7 +2535,8 @@ TEST_F(LiteralUtilTest, InvalidProtoTooManyValues) {
 TEST_F(LiteralUtilTest, InvalidProtoMissingLayout) {
   // Proto shape missing layout.
   LiteralProto proto;
-  *proto.mutable_shape() = ShapeUtil::MakeShape(PRED, {2, 2}).ToProto();
+  *proto.mutable_shape() =
+      ShapeUtil::MakeValidatedShape(PRED, {2, 2}).value().ToProto();
   proto.mutable_shape()->clear_layout();
   proto.add_preds(true);
   proto.add_preds(false);
@@ -2520,12 +2551,14 @@ TEST_F(LiteralUtilTest, InvalidProtoTooFewTupleElements) {
   // Proto has the too few tuple elements.
   LiteralProto proto;
   *proto.mutable_shape() =
-      ShapeUtil::MakeTupleShape(
+      ShapeUtil::MakeValidatedTupleShape(
           {ShapeUtil::MakeShape(PRED, {2}), ShapeUtil::MakeShape(F32, {})})
+          .value()
           .ToProto();
   LiteralProto* element0 = proto.add_tuple_literals();
+  TF_ASSERT_OK_AND_ASSIGN(Shape shape, Shape::FromProto(proto.shape()));
   *element0->mutable_shape() =
-      ShapeUtil::GetTupleElementShape(Shape(proto.shape()), 0).ToProto();
+      ShapeUtil::GetTupleElementShape(shape, 0).ToProto();
   element0->add_preds(false);
   element0->add_preds(true);
 
@@ -2538,20 +2571,24 @@ TEST_F(LiteralUtilTest, InvalidProtoTooManyTupleElements) {
   // Proto has the too many tuple elements.
   LiteralProto proto;
   *proto.mutable_shape() =
-      ShapeUtil::MakeTupleShape(
+      ShapeUtil::MakeValidatedTupleShape(
           {ShapeUtil::MakeShape(PRED, {2}), ShapeUtil::MakeShape(F32, {})})
+          .value()
           .ToProto();
   LiteralProto* element0 = proto.add_tuple_literals();
+  TF_ASSERT_OK_AND_ASSIGN(Shape shape, Shape::FromProto(proto.shape()));
   *element0->mutable_shape() =
-      ShapeUtil::GetTupleElementShape(Shape(proto.shape()), 0).ToProto();
+      ShapeUtil::GetTupleElementShape(shape, 0).ToProto();
   element0->add_preds(false);
   element0->add_preds(true);
   LiteralProto* element1 = proto.add_tuple_literals();
+  TF_ASSERT_OK_AND_ASSIGN(shape, Shape::FromProto(proto.shape()));
   *element1->mutable_shape() =
-      ShapeUtil::GetTupleElementShape(Shape(proto.shape()), 1).ToProto();
+      ShapeUtil::GetTupleElementShape(shape, 1).ToProto();
   element1->add_f32s(42.0);
   LiteralProto* element2 = proto.add_tuple_literals();
-  *element2->mutable_shape() = ShapeUtil::MakeShape(F32, {}).ToProto();
+  *element2->mutable_shape() =
+      ShapeUtil::MakeValidatedShape(F32, {}).value().ToProto();
   element2->add_f32s(123.0);
 
   absl::Status status = Literal::CreateFromProto(proto).status();
@@ -2563,8 +2600,9 @@ TEST_F(LiteralUtilTest, BroadcastVectorToMatrix0) {
   Literal literal = LiteralUtil::CreateR1<int64_t>({1, 2});
   TF_ASSERT_OK_AND_ASSIGN(
       Literal broadcasted_literal,
-      literal.Broadcast(/*result_shape=*/ShapeUtil::MakeShape(S64, {2, 2}),
-                        /*dimensions=*/{0}));
+      literal.Broadcast(
+          /*result_shape=*/ShapeUtil::MakeValidatedShape(S64, {2, 2}).value(),
+          /*dimensions=*/{0}));
   EXPECT_EQ(broadcasted_literal,
             LiteralUtil::CreateR2<int64_t>({{1, 1}, {2, 2}}));
 }
@@ -2573,8 +2611,9 @@ TEST_F(LiteralUtilTest, BroadcastVectorToMatrix1) {
   Literal literal = LiteralUtil::CreateR1<int64_t>({1, 2});
   TF_ASSERT_OK_AND_ASSIGN(
       Literal broadcasted_literal,
-      literal.Broadcast(/*result_shape=*/ShapeUtil::MakeShape(S64, {2, 2}),
-                        /*dimensions=*/{1}));
+      literal.Broadcast(
+          /*result_shape=*/ShapeUtil::MakeValidatedShape(S64, {2, 2}).value(),
+          /*dimensions=*/{1}));
   EXPECT_EQ(broadcasted_literal,
             LiteralUtil::CreateR2<int64_t>({{1, 2}, {1, 2}}));
 }
@@ -2583,16 +2622,18 @@ TEST_F(LiteralUtilTest, BroadcastVectorToMatrixWithZeroDim) {
   Literal literal = LiteralUtil::CreateR1<int32_t>({1, 2});
   TF_ASSERT_OK_AND_ASSIGN(
       Literal broadcasted_literal,
-      literal.Broadcast(/*result_shape=*/ShapeUtil::MakeShape(S32, {2, 0}),
-                        /*dimensions=*/{0}));
+      literal.Broadcast(
+          /*result_shape=*/ShapeUtil::MakeValidatedShape(S32, {2, 0}).value(),
+          /*dimensions=*/{0}));
 }
 
 TEST_F(LiteralUtilTest, BroadcastScalarToMatrix) {
   Literal literal = LiteralUtil::CreateR0<int32_t>(9);
   TF_ASSERT_OK_AND_ASSIGN(
       Literal broadcasted_literal,
-      literal.Broadcast(/*result_shape=*/ShapeUtil::MakeShape(S32, {2, 2}),
-                        /*dimensions=*/{}));
+      literal.Broadcast(
+          /*result_shape=*/ShapeUtil::MakeValidatedShape(S32, {2, 2}).value(),
+          /*dimensions=*/{}));
   EXPECT_EQ(broadcasted_literal,
             LiteralUtil::CreateR2<int32_t>({{9, 9}, {9, 9}}));
 }
@@ -2602,8 +2643,9 @@ TEST_F(LiteralUtilTest, DynamicBroadcast) {
   literal.SetDynamicSize(0, 1);
   TF_ASSERT_OK_AND_ASSIGN(
       Literal broadcasted_literal,
-      literal.Broadcast(/*result_shape=*/ShapeUtil::MakeShape(S64, {2, 2}),
-                        /*dimensions=*/{1}));
+      literal.Broadcast(
+          /*result_shape=*/ShapeUtil::MakeValidatedShape(S64, {2, 2}).value(),
+          /*dimensions=*/{1}));
   EXPECT_EQ(broadcasted_literal, LiteralUtil::CreateR2<int64_t>({{1}, {1}}));
   EXPECT_EQ(broadcasted_literal.GetDynamicSize(1), 1);
 }
@@ -2723,21 +2765,21 @@ TEST_F(LiteralUtilTest, IsEqualAt) {
 
 TEST_F(LiteralUtilTest, CreateFromShapeWithUnknownLeafArrays) {
   Literal c1 = Literal::CreateFromShapeWithUnknownLeafArrays(
-      ShapeUtil::MakeShape(F32, {4, 4}));
+      ShapeUtil::MakeValidatedShape(F32, {4, 4}).value());
   EXPECT_FALSE(c1.IsKnown());
 }
 
 TEST_F(LiteralUtilTest, CreateFromShapeWithUnknownLeafArraysS4Tuple) {
-  auto inner_shape = ShapeUtil::MakeShape(S4, {4, 4});
+  auto inner_shape = ShapeUtil::MakeValidatedShape(S4, {4, 4}).value();
   inner_shape.mutable_layout()->set_element_size_in_bits(4);
   Literal c1 = Literal::CreateFromShapeWithUnknownLeafArrays(
-      ShapeUtil::MakeTupleShape({inner_shape}));
+      ShapeUtil::MakeValidatedTupleShape({inner_shape}).value());
   EXPECT_FALSE(c1.IsKnown());
 }
 
 TEST_F(LiteralUtilTest, CreatePartiallyKnownTuple) {
   Literal c1 = Literal::CreateFromShapeWithUnknownLeafArrays(
-      ShapeUtil::MakeShape(F32, {4, 4}));
+      ShapeUtil::MakeValidatedShape(F32, {4, 4}).value());
   Literal c2 = LiteralUtil::CreateR0<int>(10);
   Literal c3 = LiteralUtil::MakeTuple({&c1, &c2});
   Literal c4 = LiteralUtil::CreateR0<int>(100);
@@ -2747,7 +2789,7 @@ TEST_F(LiteralUtilTest, CreatePartiallyKnownTuple) {
 
 TEST_F(LiteralUtilTest, CopyFromPartiallyKnownTuple) {
   Literal c1 = Literal::CreateFromShapeWithUnknownLeafArrays(
-      ShapeUtil::MakeShape(F32, {4, 4}));
+      ShapeUtil::MakeValidatedShape(F32, {4, 4}).value());
   Literal c2 = LiteralUtil::CreateR0<int>(10);
   Literal c3 = LiteralUtil::MakeTuple({&c1, &c2});
   Literal c4 = LiteralUtil::CreateR0<int>(100);
@@ -2760,8 +2802,9 @@ TEST_F(LiteralUtilTest, CopyFromPartiallyKnownTuple) {
 
 TEST_F(LiteralUtilTest, CopyFromPartiallyKnownTupleUnknownTupleElement) {
   Literal c1 = Literal::CreateFromShapeWithUnknownLeafArrays(
-      ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(F32, {4, 4}),
-                                 ShapeUtil::MakeShape(F32, {4, 4})}));
+      ShapeUtil::MakeValidatedTupleShape({ShapeUtil::MakeShape(F32, {4, 4}),
+                                          ShapeUtil::MakeShape(F32, {4, 4})})
+          .value());
   Literal c2 = LiteralUtil::CreateR0<int>(10);
   Literal c3 = LiteralUtil::MakeTuple({&c1, &c2});
   Literal c4 = LiteralUtil::CreateR0<int>(100);
@@ -2781,7 +2824,7 @@ TEST_F(LiteralUtilTest, CopyFromPartiallyKnownTupleUnknownTupleElement) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR1Dynamic) {
-  auto literal = Literal(ShapeUtil::MakeShape(U32, {20}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(U32, {20}).value());
   literal.SetDynamicSize(0, 10);
   literal.PopulateR1<uint32_t>({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
   std::string expected = "u32[<=20](10) {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}";
@@ -2789,7 +2832,7 @@ TEST_F(LiteralUtilTest, PopulateR1Dynamic) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR2DynamicDim0) {
-  auto literal = Literal(ShapeUtil::MakeShape(U32, {5, 2}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(U32, {5, 2}).value());
   literal.SetDynamicSize(0, 3);
   literal.PopulateR2<uint32_t>({{1, 2}, {3, 4}, {5, 6}});
   std::string expected = R"(u32[<=5,2](3,2) {
@@ -2801,7 +2844,7 @@ TEST_F(LiteralUtilTest, PopulateR2DynamicDim0) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR2DynamicDim1) {
-  auto literal = Literal(ShapeUtil::MakeShape(U32, {2, 5}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(U32, {2, 5}).value());
   literal.SetDynamicSize(1, 3);
   literal.PopulateR2<uint32_t>({{1, 2, 3}, {4, 5, 6}});
   std::string expected = R"(u32[2,<=5](2,3) {
@@ -2812,7 +2855,7 @@ TEST_F(LiteralUtilTest, PopulateR2DynamicDim1) {
 }
 
 TEST_F(LiteralUtilTest, PopulateFrom1DArray) {
-  auto literal = Literal(ShapeUtil::MakeShape(F32, {20}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(F32, {20}).value());
   literal.SetDynamicSize(0, 10);
   xla::Array<float> array({10});
   for (int i = 0; i < 10; i++) {
@@ -2824,7 +2867,7 @@ TEST_F(LiteralUtilTest, PopulateFrom1DArray) {
 }
 
 TEST_F(LiteralUtilTest, PopulateFromArrayDynamicDim0) {
-  auto literal = Literal(ShapeUtil::MakeShape(F32, {5, 5}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(F32, {5, 5}).value());
   const uint32_t rows = 3;
   const uint32_t cols = 5;
   literal.SetDynamicSize(0, rows);
@@ -2844,7 +2887,7 @@ TEST_F(LiteralUtilTest, PopulateFromArrayDynamicDim0) {
 }
 
 TEST_F(LiteralUtilTest, PopulateFromArrayDynamicDim1) {
-  auto literal = Literal(ShapeUtil::MakeShape(F32, {5, 5}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(F32, {5, 5}).value());
   const uint32_t rows = 5;
   const uint32_t cols = 3;
   literal.SetDynamicSize(1, cols);
@@ -2866,7 +2909,7 @@ TEST_F(LiteralUtilTest, PopulateFromArrayDynamicDim1) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR2FromArray2DDynamicDim0) {
-  auto literal = Literal(ShapeUtil::MakeShape(F32, {5, 5}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(F32, {5, 5}).value());
   const uint32_t rows = 3;
   const uint32_t cols = 5;
   literal.SetDynamicSize(0, rows);
@@ -2886,7 +2929,7 @@ TEST_F(LiteralUtilTest, PopulateR2FromArray2DDynamicDim0) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR2FromArray2DDynamicDim1) {
-  auto literal = Literal(ShapeUtil::MakeShape(F32, {5, 5}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(F32, {5, 5}).value());
   const uint32_t rows = 5;
   const uint32_t cols = 3;
   literal.SetDynamicSize(1, cols);
@@ -2908,7 +2951,7 @@ TEST_F(LiteralUtilTest, PopulateR2FromArray2DDynamicDim1) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR2FromArray2DDynamicDim0Dim1) {
-  auto literal = Literal(ShapeUtil::MakeShape(F32, {5, 5}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(F32, {5, 5}).value());
   const uint32_t rows = 3;
   const uint32_t cols = 2;
   literal.SetDynamicSize(0, rows);
@@ -2929,7 +2972,7 @@ TEST_F(LiteralUtilTest, PopulateR2FromArray2DDynamicDim0Dim1) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR3FromArray3DDynamicDim0) {
-  auto literal = Literal(ShapeUtil::MakeShape(S32, {3, 3, 3}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(S32, {3, 3, 3}).value());
   const uint32_t rows = 2;
   const uint32_t cols = 3;
   const uint32_t depth = 3;
@@ -2959,7 +3002,7 @@ TEST_F(LiteralUtilTest, PopulateR3FromArray3DDynamicDim0) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR3FromArray3DDynamicDim1) {
-  auto literal = Literal(ShapeUtil::MakeShape(S32, {3, 3, 3}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(S32, {3, 3, 3}).value());
   const uint32_t rows = 3;
   const uint32_t cols = 2;
   const uint32_t depth = 3;
@@ -2991,7 +3034,7 @@ TEST_F(LiteralUtilTest, PopulateR3FromArray3DDynamicDim1) {
 }
 
 TEST_F(LiteralUtilTest, PopulateR3FromArray3DDynamicDim2) {
-  auto literal = Literal(ShapeUtil::MakeShape(S32, {3, 3, 3}));
+  auto literal = Literal(ShapeUtil::MakeValidatedShape(S32, {3, 3, 3}).value());
   const uint32_t rows = 3;
   const uint32_t cols = 3;
   const uint32_t depth = 2;
@@ -3026,8 +3069,8 @@ TEST_F(LiteralUtilTest, PopulateR3FromArray3DDynamicDim2) {
 }
 
 TEST_F(LiteralUtilTest, Compare4BitType) {
-  Literal literal1 = Literal(ShapeUtil::MakeShape(S4, {}));
-  Literal literal2 = Literal(ShapeUtil::MakeShape(S4, {}));
+  Literal literal1 = Literal(ShapeUtil::MakeValidatedShape(S4, {}).value());
+  Literal literal2 = Literal(ShapeUtil::MakeValidatedShape(S4, {}).value());
   void* p = literal1.untyped_data();
   void* q = literal2.untyped_data();
   *((uint8_t*)p) = 0x44;
@@ -3059,7 +3102,8 @@ class LiteralSerializationTest : public ::testing::Test,
                DimensionVector{0, 8},
                DimensionVector{8, 9},
            }) {
-        params.push_back(ShapeUtil::MakeShape(element_type, dimensions));
+        params.push_back(
+            ShapeUtil::MakeValidatedShape(element_type, dimensions).value());
       }
     }
     return params;
@@ -3068,18 +3112,20 @@ class LiteralSerializationTest : public ::testing::Test,
   static std::vector<Shape> GenerateTupleParams() {
     std::vector<Shape> params;
     const Shape tuple_elements[] = {
-        ShapeUtil::MakeShape(PRED, {}),
-        ShapeUtil::MakeShape(U4, {3}),
-        ShapeUtil::MakeShape(U32, {0}),
-        ShapeUtil::MakeShape(F32, {7}),
-        ShapeUtil::MakeTupleShape({
-            ShapeUtil::MakeShape(BF16, {3}),
-            ShapeUtil::MakeShape(C64, {7}),
-        }),
+        ShapeUtil::MakeValidatedShape(PRED, {}).value(),
+        ShapeUtil::MakeValidatedShape(U4, {3}).value(),
+        ShapeUtil::MakeValidatedShape(U32, {0}).value(),
+        ShapeUtil::MakeValidatedShape(F32, {7}).value(),
+        ShapeUtil::MakeValidatedTupleShape({
+                                               ShapeUtil::MakeShape(BF16, {3}),
+                                               ShapeUtil::MakeShape(C64, {7}),
+                                           })
+            .value(),
     };
     for (const Shape& lhs : tuple_elements) {
       for (const Shape& rhs : tuple_elements) {
-        params.push_back(ShapeUtil::MakeTupleShape({lhs, rhs}));
+        params.push_back(
+            ShapeUtil::MakeValidatedTupleShape({lhs, rhs}).value());
       }
     }
     return params;
@@ -3097,7 +3143,7 @@ TEST_P(LiteralSerializationTest, Test) {
           return;
         }
         ASSERT_TRUE(subshape.IsArray());
-        primitive_util::ArrayTypeSwitch<void>(
+        primitive_util::ArrayTypeSwitch(
             [&](auto primitive_type) {
               using NativeT = primitive_util::NativeTypeOf<primitive_type>;
               for (auto& element : literal.data<NativeT>(shape_index)) {
@@ -3133,6 +3179,14 @@ INSTANTIATE_TEST_SUITE_P(
     Tuples, LiteralSerializationTest,
     ::testing::ValuesIn(LiteralSerializationTest::GenerateTupleParams()));
 
+TYPED_TEST(LiteralUtilFloatTest, MaxFiniteValue) {
+  constexpr auto ptype = primitive_util::NativeToPrimitiveType<TypeParam>();
+  auto max_finite_value = LiteralUtil::MaxFiniteValue(ptype);
+  EXPECT_TRUE(ShapeUtil::IsScalar(max_finite_value.shape()));
+  EXPECT_EQ(max_finite_value.Convert(F32)->template Get<float>({}),
+            std::numeric_limits<TypeParam>::max());
+}
+
 //===----------------------------------------------------------------------===//
 // Literal::Broadcast perfrormance benchmarks below.
 //===----------------------------------------------------------------------===//
@@ -3144,13 +3198,14 @@ void BM_BroadcastScalarToMatrix(::testing::benchmark::State& state) {
   Literal literal = LiteralUtil::CreateR0<int64_t>(42);
 
   for (auto s : state) {
-    CHECK_OK(
-        literal.Broadcast(/*result_shape=*/ShapeUtil::MakeShape(S64, {d0, d1}),
-                          /*dimensions=*/{}));
+    CHECK_OK(literal.Broadcast(
+        /*result_shape=*/ShapeUtil::MakeValidatedShape(S64, {d0, d1}).value(),
+        /*dimensions=*/{}));
   }
 
-  state.SetLabel(literal.shape().ToString() + " to " +
-                 ShapeUtil::MakeShape(S64, {d0, d1}).ToString());
+  state.SetLabel(
+      literal.shape().ToString() + " to " +
+      ShapeUtil::MakeValidatedShape(S64, {d0, d1}).value().ToString());
 }
 
 BENCHMARK(BM_BroadcastScalarToMatrix)
@@ -3169,13 +3224,14 @@ void BM_BroadcastVectorToMatrix(::testing::benchmark::State& state) {
   Literal literal = LiteralUtil::CreateR1<int64_t>(v);
 
   for (auto s : state) {
-    CHECK_OK(
-        literal.Broadcast(/*result_shape=*/ShapeUtil::MakeShape(S64, {d0, d1}),
-                          /*dimensions=*/{0}));
+    CHECK_OK(literal.Broadcast(
+        /*result_shape=*/ShapeUtil::MakeValidatedShape(S64, {d0, d1}).value(),
+        /*dimensions=*/{0}));
   }
 
-  state.SetLabel(literal.shape().ToString() + " to " +
-                 ShapeUtil::MakeShape(S64, {d0, d1}).ToString());
+  state.SetLabel(
+      literal.shape().ToString() + " to " +
+      ShapeUtil::MakeValidatedShape(S64, {d0, d1}).value().ToString());
 }
 
 BENCHMARK(BM_BroadcastVectorToMatrix)
@@ -3187,18 +3243,20 @@ void BM_BroadcastMatrixToTensor(::testing::benchmark::State& state) {
   const int d0 = state.range(0);
   const int d1 = state.range(1);
 
-  Literal literal(ShapeUtil::MakeShape(S64, {d0, d1}));
+  Literal literal(ShapeUtil::MakeValidatedShape(S64, {d0, d1}).value());
   CHECK_OK(literal.PopulateLinear<int64_t>(
       [](int64_t linear_index) { return linear_index; }));
 
   for (auto s : state) {
     CHECK_OK(literal.Broadcast(
-        /*result_shape=*/ShapeUtil::MakeShape(S64, {4, d0, d1}),
+        /*result_shape=*/ShapeUtil::MakeValidatedShape(S64, {4, d0, d1})
+            .value(),
         /*dimensions=*/{1, 2}));
   }
 
-  state.SetLabel(literal.shape().ToString() + " to " +
-                 ShapeUtil::MakeShape(S64, {4, d0, d1}).ToString());
+  state.SetLabel(
+      literal.shape().ToString() + " to " +
+      ShapeUtil::MakeValidatedShape(S64, {4, d0, d1}).value().ToString());
 }
 
 BENCHMARK(BM_BroadcastMatrixToTensor)
@@ -3212,7 +3270,7 @@ BENCHMARK(BM_BroadcastMatrixToTensor)
 
 void BM_Populate(::testing::benchmark::State& state) {
   int64_t d0 = state.range(0);
-  Literal literal(ShapeUtil::MakeShape(F32, {d0, d0}));
+  Literal literal(ShapeUtil::MakeValidatedShape(F32, {d0, d0}).value());
 
   for (auto s : state) {
     CHECK_OK(literal.Populate<float>([&](absl::Span<const int64_t> indexes) {
@@ -3224,7 +3282,7 @@ void BM_Populate(::testing::benchmark::State& state) {
 
 void BM_PopulateParallel(::testing::benchmark::State& state) {
   int64_t d0 = state.range(0);
-  Literal literal(ShapeUtil::MakeShape(F32, {d0, d0}));
+  Literal literal(ShapeUtil::MakeValidatedShape(F32, {d0, d0}).value());
 
   for (auto s : state) {
     CHECK_OK(literal.PopulateParallel<float>(
@@ -3237,7 +3295,7 @@ void BM_PopulateParallel(::testing::benchmark::State& state) {
 
 void BM_PopulateLinear(::testing::benchmark::State& state) {
   int64_t d0 = state.range(0);
-  Literal literal(ShapeUtil::MakeShape(F32, {d0, d0}));
+  Literal literal(ShapeUtil::MakeValidatedShape(F32, {d0, d0}).value());
 
   for (auto s : state) {
     CHECK_OK(literal.PopulateLinear<float>(
@@ -3247,7 +3305,7 @@ void BM_PopulateLinear(::testing::benchmark::State& state) {
 
 void BM_PopulateLinearParallel(::testing::benchmark::State& state) {
   int64_t d0 = state.range(0);
-  Literal literal(ShapeUtil::MakeShape(F32, {d0, d0}));
+  Literal literal(ShapeUtil::MakeValidatedShape(F32, {d0, d0}).value());
 
   for (auto s : state) {
     CHECK_OK(literal.PopulateLinearParallel<float>(

@@ -346,7 +346,8 @@ class PjRtCApiClient : public PjRtClient {
       PjRtMemorySpace* memory_space, const Layout* device_layout) override;
 
   absl::StatusOr<std::unique_ptr<PjRtBuffer>> BufferFromHostLiteral(
-      const LiteralSlice& literal, PjRtMemorySpace* memory_space) override {
+      const LiteralSlice& literal, PjRtMemorySpace* memory_space,
+      const Layout* device_layout) override {
     return Unimplemented(
         "PJRT C API does not support BufferFromHostLiteral. Please report an "
         "issue at https://github.com/google/jax/issues if you need this "
@@ -767,6 +768,9 @@ absl::StatusOr<std::unique_ptr<PjRtTopologyDescription>> GetCApiTopology(
 absl::StatusOr<std::unique_ptr<PjRtTopologyDescription>> GetCApiTopology(
     absl::string_view device_type, absl::string_view topology_name,
     const absl::flat_hash_map<std::string, PjRtValueType>& create_options = {});
+
+absl::StatusOr<std::unique_ptr<PjRtCompiler>> GetCApiCompiler(
+    absl::string_view device_type);
 
 }  // namespace xla
 

@@ -43,6 +43,7 @@ limitations under the License.
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -75,6 +76,17 @@ limitations under the License.
 
 namespace xla {
 
+void RegisterAllHloDialects(mlir::DialectRegistry& registry) {
+  registry.insert<mlir::arith::ArithDialect>();
+  registry.insert<mlir::func::FuncDialect>();
+  registry.insert<mlir::ml_program::MLProgramDialect>();
+  registry.insert<mlir::shape::ShapeDialect>();
+  mlir::func::registerAllExtensions(registry);
+  mlir::mhlo::registerAllMhloDialects(registry);
+  mlir::sdy::registerAllDialects(registry);
+  mlir::stablehlo::registerAllDialects(registry);
+}
+
 absl::Status MlirToXlaComputation(mlir::ModuleOp module,
                                   XlaComputation& xla_computation,
                                   bool use_tuple_args, bool return_tuple,
@@ -102,6 +114,14 @@ absl::Status MlirToXlaComputation(mlir::ModuleOp module,
     // regions, since XLA uses functional control flow.
     pm.addNestedPass<mlir::func::FuncOp>(
         mlir::stablehlo_ext::createSinkConstantsToControlFlowPass());
+
+    // Export an StableHLO + Shardy module into a pure StableHLO module, to
+    // prepare for a round trip to HLO, such that the Shardy ops and attributes
+    // are preserved when going back to MLIR for Shardy propagation. This is a
+    // no-op if the module is already pure StableHLO.
+    // NOTE: we don't use `use_shardy` because it isn't guaranteed to be true if
+    // the module has Shardy artifacts.
+    xla::sdy::addSdyRoundTripExportPipeline(pm);
 
     if (failed(pm.run(module))) {
       VLOG(1) << "MHLO->HLO lowering passes failed.";
@@ -136,14 +156,7 @@ absl::Status MlirToXlaComputation(mlir::ModuleOp module,
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ParseMlirModuleString(
     absl::string_view mlir_module_str, mlir::MLIRContext& context) {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect>();
-  registry.insert<mlir::func::FuncDialect>();
-  registry.insert<mlir::ml_program::MLProgramDialect>();
-  registry.insert<mlir::shape::ShapeDialect>();
-  mlir::func::registerAllExtensions(registry);
-  mlir::mhlo::registerAllMhloDialects(registry);
-  mlir::sdy::registerAllDialects(registry);
-  mlir::stablehlo::registerAllDialects(registry);
+  RegisterAllHloDialects(registry);
   context.appendDialectRegistry(registry);
 
   mlir::BaseScopedDiagnosticHandler diagnostic_handler(&context);

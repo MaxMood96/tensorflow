@@ -258,8 +258,35 @@ cc_library(
 
 cc_library(
     name = "launch_dim",
+    srcs = ["launch_dim.cc"],
     hdrs = ["launch_dim.h"],
-    deps = ["@com_google_absl//absl/strings"],
+    deps = [
+        ":launch_dim_proto_cc",
+        "//xla/tsl/platform:statusor",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+    ],
+)
+
+tf_proto_library(
+    name = "launch_dim_proto",
+    srcs = ["launch_dim.proto"],
+)
+
+xla_cc_test(
+    name = "launch_dim_test",
+    srcs = ["launch_dim_test.cc"],
+    deps = [
+        ":launch_dim",
+        "//xla/tsl/platform:status_matchers",
+        "//xla/tsl/platform:statusor",
+        "//xla/tsl/util/proto:proto_matchers",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:protobuf",
+    ],
 )
 
 cc_library(
@@ -311,6 +338,7 @@ cc_library(
     srcs = ["blas.cc"],
     hdrs = ["blas.h"],
     deps = [
+        ":blas_proto_cc",
         ":data_type",
         ":device_memory",
         ":numeric_options",
@@ -357,6 +385,11 @@ cc_library(
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
     ] + if_google(["@com_google_protobuf//:wrappers_cc_proto"]),
+)
+
+tf_proto_library(
+    name = "blas_proto",
+    srcs = ["blas.proto"],
 )
 
 cc_library(
@@ -498,6 +531,7 @@ cc_library(
     srcs = ["kernel_spec.cc"],
     hdrs = ["kernel_spec.h"],
     deps = [
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",

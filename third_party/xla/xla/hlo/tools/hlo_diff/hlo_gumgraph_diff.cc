@@ -30,9 +30,12 @@
 #include "xla/hlo/tools/hlo_diff/hlo_diff_result.h"
 #include "xla/hlo/tools/hlo_diff/hlo_diff_summary.h"
 #include "xla/hlo/tools/hlo_diff/hlo_gumgraph_mappings.h"
+#include "xla/hlo/tools/hlo_diff/matchers/bottom_up_matcher.h"
+#include "xla/hlo/tools/hlo_diff/matchers/exact_subgraph_matcher.h"
+#include "xla/hlo/tools/hlo_diff/matchers/gumgraph_matcher.h"
 #include "xla/hlo/tools/hlo_diff/matchers/hlo_call_graph_matcher.h"
 #include "xla/hlo/tools/hlo_diff/matchers/hlo_computation_graph_matcher.h"
-#include "xla/hlo/tools/hlo_diff/matchers/hlo_gumgraph_matcher.h"
+#include "xla/hlo/tools/hlo_diff/matchers/top_down_matcher.h"
 #include "xla/service/call_graph.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
@@ -64,9 +67,13 @@ absl::StatusOr<std::unique_ptr<const HloGumgraphMappings>> FindMappings(
   std::vector<std::unique_ptr<HloGumgraphMatcher>> matchers;
   matchers.push_back(
       std::make_unique<GreedySubGraphExactMatcher>(&left, &right));
+  matchers.push_back(std::make_unique<GreedyTopDownMatcher>(
+      &left, &right, /*require_same_children=*/true));
   matchers.push_back(
       std::make_unique<GreedyLimitedCandidatesBottomUpMatcher>(&left, &right));
   if (options.use_top_down_matcher) {
+    matchers.push_back(std::make_unique<GreedyTopDownMatcher>(
+        &left, &right, /*require_same_children=*/true));
     matchers.push_back(std::make_unique<GreedyTopDownMatcher>(&left, &right));
   }
 
@@ -102,7 +109,7 @@ absl::StatusOr<HloGumgraphDiffResults> ComputeDiff(const HloModule& left,
   std::unique_ptr<const DiffResult> diff_result =
       ConstructDiffResult(*left_graph, *right_graph, *mappings);
   std::unique_ptr<const DiffSummary> diff_summary =
-      ConstructDiffSummary(*left_graph, *right_graph, *mappings, *diff_result);
+      ConstructDiffSummary(left, right, *diff_result);
   std::unique_ptr<const DiffEval> diff_eval = nullptr;
   if (run_eval) {
     diff_eval = ComputeDiffEval(*left_graph, *right_graph, *mappings,

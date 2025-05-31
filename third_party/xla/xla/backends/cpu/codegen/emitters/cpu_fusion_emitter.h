@@ -44,7 +44,7 @@ IndexingMap GetDefaultIndexingMap(absl::Span<const int64_t> thread_tile_sizes,
                                   absl::Span<const int64_t> shape,
                                   mlir::MLIRContext* mlir_context);
 
-absl::StatusOr<mlir::func::FuncOp> EmitFusionKernelApi(
+absl::StatusOr<mlir::func::FuncOp> EmitEntryFunctionApi(
     mlir::ModuleOp fusion_module, const HloFusionInstruction& fusion,
     const std::string& entry_function_name,
     const BufferAssignment& buffer_assignment);
@@ -55,10 +55,15 @@ absl::StatusOr<emitters::CallTargetProvider> EmitCallTargets(
     const emitters::PartitionedComputations& computations,
     const std::vector<emitters::EpilogueSpecification>& epilogues);
 
-// Set the data layout attribute of the module based on the called instructions
-// of the fusion.
-void SetDataLayoutAttribute(mlir::ModuleOp module,
-                            const HloFusionInstruction& fusion);
+// Creates a module op with the name of the fusion using `GetFusionName`.
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateNamedMlirModuleOp(
+    const HloFusionInstruction& fusion, mlir::Builder& builder);
+
+// Returns the name of the fusion.
+// If `xla_cpu_generate_unique_c_style_kernel_entry_points` is true, returns a
+// C-style name of the fusion created by combining the name of the parent
+// HloModule and the name of the fusion.
+absl::StatusOr<std::string> GetFusionName(const HloFusionInstruction& fusion);
 
 class CpuFusionEmitterBase {
  public:

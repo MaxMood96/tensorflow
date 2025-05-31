@@ -14,6 +14,7 @@ package_group(
         "//tensorflow/compiler/mlir/tf2xla/transforms/...",
         "//tensorflow/lite/...",
         "//third_party/cloud_tpu/inference_converter/...",  # TPU Inference Converter V1
+        "//waymo/ml/compiler/mlir/...",
     ] + internal_visibility_allowlist(),
 )
 
@@ -84,6 +85,7 @@ cc_library(
     hdrs = [
         "passes/tf_passes.h",
     ],
+    compatible_with = get_compatible_with_portable(),
     deps = [
         ":bfloat16_type",
         ":fill_quantization_options",
@@ -621,10 +623,10 @@ cc_library(
     ],
     compatible_with = get_compatible_with_portable(),
     deps = [
-        ":passes",
         ":quantization_config_proto_cc",
         ":stablehlo_test_passes_inc_gen",
-        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantOps",
+        ":tf_passes",
+        "//tensorflow/compiler/mlir/quantization/common/ir:QuantOps",
         "//tensorflow/compiler/mlir/quantization/stablehlo/cc:config",
         "//tensorflow/compiler/mlir/quantization/stablehlo/cc:post_calibration",
         "//tensorflow/compiler/mlir/quantization/stablehlo/cc:pre_calibration",
@@ -863,13 +865,11 @@ tf_cc_binary(
     visibility = [":internal_visibility_allowlist_package"],
     deps = [
         ":bridge_passes",
-        ":passes",
         ":test_passes",
         ":tf_passes",
         "//tensorflow/compiler/mlir:init_mlir",
-        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantOps",
         "//tensorflow/compiler/mlir/quantization/common/ir:QuantOps",
-        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:pass_pipeline",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:tf_pass_pipeline",
         "//tensorflow/compiler/mlir/tensorflow",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tensorflow_passes",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tf_dialect_passes",

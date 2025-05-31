@@ -96,23 +96,6 @@ cc_library(
     alwayslink = 1,
 )
 
-gentbl_cc_library(
-    name = "legalize_tf_patterns_inc_gen",
-    compatible_with = get_compatible_with_portable(),
-    tbl_outs = {"transforms/generated_legalize_tf.inc": ["-gen-rewriters"]},
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "transforms/legalize_tf_patterns.td",
-    deps = [
-        "//tensorflow/compiler/mlir/tensorflow:tensorflow_ops_td_files",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:FuncTdFiles",
-        "@llvm-project//mlir:TensorOpsTdFiles",
-        "@local_xla//xla/mlir_hlo:hlo_ops_td_files",
-        "@stablehlo//:chlo_ops_td_files",
-        "@stablehlo//:stablehlo_ops_td_files",
-    ],
-)
-
 cc_library(
     name = "tfl_stablehlo",
     srcs = [
@@ -207,7 +190,7 @@ cc_library(
     deps = [
         ":stablehlo_util",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
-        "//tensorflow/compiler/mlir/quantization/common/quantization_lib",
+        "//tensorflow/compiler/mlir/lite/quantization/common/quantization_lib",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
@@ -920,7 +903,7 @@ tf_cc_binary(
         ":tfl_stablehlo",
         ":uniform_quantized_stablehlo_to_tfl_pass",
         "//tensorflow/compiler/mlir:passes",
-        "//tensorflow/compiler/mlir:tf_mlir_opt_main",
+        "//tensorflow/compiler/mlir/lite:litert_mlir_opt_main",
         "//tensorflow/compiler/mlir/stablehlo:fold_broadcast_pass",
         "//tensorflow/compiler/mlir/stablehlo:fuse_convolution_pass",
         "//tensorflow/compiler/mlir/stablehlo:tf_stablehlo",

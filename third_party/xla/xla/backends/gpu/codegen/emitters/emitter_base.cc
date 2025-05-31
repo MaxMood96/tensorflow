@@ -84,9 +84,12 @@ limitations under the License.
 #include "xla/backends/gpu/codegen/emitters/transforms/passes.h"
 #include "xla/backends/gpu/codegen/fusion_emitter.h"
 #include "xla/backends/gpu/runtime/kernel_thunk.h"
+#include "xla/backends/gpu/runtime/thunk.h"
 #include "xla/codegen/emitters/computation_partitioner.h"
 #include "xla/codegen/emitters/elemental_hlo_to_mlir.h"
 #include "xla/codegen/emitters/ir/xla_ops.h"
+#include "xla/codegen/emitters/kernel_api_builder.h"
+#include "xla/codegen/emitters/kernel_arguments.h"
 #include "xla/codegen/emitters/transforms/passes.h"
 #include "xla/codegen/emitters/type_util.h"
 #include "xla/hlo/analysis/indexing_analysis.h"
@@ -101,9 +104,9 @@ limitations under the License.
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/dump.h"
+#include "xla/service/gpu/gpu_constants.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/ir_emitter_context.h"
-#include "xla/service/gpu/kernel_arguments.h"
 #include "xla/service/gpu/kernel_reuse_cache.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/llvm_gpu_backend/ptx_version_util.h"
@@ -112,7 +115,9 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
+#include "xla/stream_executor/cuda/cuda_compute_capability.h"
 #include "xla/stream_executor/device_description.h"
+#include "xla/stream_executor/semantic_version.h"
 #include "xla/tsl/framework/mlir/status_scoped_diagnostic_handler.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
@@ -166,44 +171,6 @@ void AddRanges(llvm::Function* func, const LaunchDimensions& launch_dims,
   }
 }
 
-bool Needs64Bits(const Shape& shape) {
-  return shape.IsArray() ? !IsInt32(ShapeUtil::ElementsIn(shape))
-                         : absl::c_any_of(shape.tuple_shapes(), Needs64Bits);
-}
-
-bool Is64BitIndex(const HloInstruction* instr, int operand) {
-  const auto& shape = instr->operand(operand)->shape();
-  return shape.element_type() == PrimitiveType::S64 ||
-         shape.element_type() == PrimitiveType::U64;
-}
-
-bool Needs64BitIndices(const HloComputation* computation) {
-  for (auto* instr : computation->instructions()) {
-    // Check if any HLO instructions directly take 64 bit indices as operands.
-    switch (instr->opcode()) {
-      case HloOpcode::kDynamicSlice:
-      case HloOpcode::kDynamicUpdateSlice:
-        for (int i = 1; i < instr->operand_count(); ++i) {
-          if (Is64BitIndex(instr, i)) return true;
-        }
-        break;
-      case HloOpcode::kGather:
-      case HloOpcode::kScatter:
-        CHECK(instr->shape().IsArray()) << "Variadic scatter is unsupported.";
-        if (Is64BitIndex(instr, 1)) return true;
-        break;
-      default:
-        break;
-    }
-
-    if (Needs64Bits(instr->shape()) ||
-        absl::c_any_of(instr->called_computations(), Needs64BitIndices)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 absl::Status RunPassPipeline(mlir::ModuleOp module, const HloModule& hlo_module,
                              mlir::PassManager& pm,
                              absl::string_view entry_function_name) {
@@ -252,6 +219,17 @@ absl::Status RunPassPipeline(mlir::ModuleOp module, const HloModule& hlo_module,
 
 }  // namespace
 
+Value EmitterBase::EmitWorkGroupId(mlir::ImplicitLocOpBuilder& builder,
+                                   WorkGroupDimension dim) const {
+  const auto& counts = launch_dimensions().block_counts();
+  int64_t count = dim == WorkGroupDimension::x   ? counts.x
+                  : dim == WorkGroupDimension::y ? counts.y
+                                                 : counts.z;
+  auto block_id = builder.create<WorkGroupIdOp>(dim);
+  block_id->setAttr("xla.range", builder.getIndexArrayAttr({0, count - 1}));
+  return block_id;
+}
+
 Value EmitterBase::EmitBlockId(mlir::ImplicitLocOpBuilder& builder,
                                int dim) const {
   const auto& counts = launch_dimensions().block_counts();
@@ -283,9 +261,9 @@ absl::StatusOr<FusionEmissionResult> EmitterBase::Emit(
     IrEmitterContext& ir_emitter_context,
     const HloFusionInstruction& fusion) const {
   VLOG(4) << "Fusion: " << fusion.fused_instructions_computation()->ToString();
-  TF_ASSIGN_OR_RETURN(
-      auto args,
-      KernelArguments::Create(ir_emitter_context.buffer_assignment(), &fusion));
+  TF_ASSIGN_OR_RETURN(auto args, emitters::KernelArguments::Create(
+                                     ir_emitter_context.buffer_assignment(),
+                                     GetDefaultBufferAlignment(), &fusion));
   auto launch_dims = launch_dimensions();
   auto [status_or_entry, cached] =
       ir_emitter_context.kernel_cache().GetWithStatus(
@@ -337,8 +315,8 @@ absl::StatusOr<FusionEmissionResult> EmitterBase::Emit(
 
   FusionEmissionResult result;
   result.thunks.emplace_back(std::make_unique<KernelThunk>(
-      &fusion, entry->kernel_name, args.args(), launch_dims, entry->cluster_dim,
-      entry->shmem_bytes));
+      Thunk::ThunkInfo::WithProfileAnnotation(&fusion), entry->kernel_name,
+      args.args(), launch_dims, entry->cluster_dim, entry->shmem_bytes));
   return result;
 }
 
@@ -369,8 +347,7 @@ absl::StatusOr<std::unique_ptr<llvm::Module>> EmitterBase::CreateLLVMModule(
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> EmitterBase::CreateMLIRModule(
     mlir::MLIRContext& context, const HloFusionInstruction& fusion,
     const std::string& entry_function_name,
-    const BufferAssignment* buffer_assignment,
-    mlir::interpreter::MlirCompilationTrace* trace) const {
+    const BufferAssignment* buffer_assignment) const {
   context.loadDialect<
       mlir::DLTIDialect, mlir::NVVM::NVVMDialect, mlir::ROCDL::ROCDLDialect,
       mlir::affine::AffineDialect, mlir::arith::ArithDialect,
@@ -391,68 +368,10 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> EmitterBase::CreateMLIRModule(
   auto loc = mlir::NameLoc::get(builder.getStringAttr(fusion.name()));
   mlir::OwningOpRef<mlir::ModuleOp> module = llvm_ir::CreateMlirModuleOp(loc);
 
-  // Create the entry function.
-  SmallVector<mlir::Type> param_types;
-  std::optional<KernelArguments> args;
-  if (buffer_assignment != nullptr) {
-    TF_ASSIGN_OR_RETURN(args,
-                        KernelArguments::Create(*buffer_assignment, &fusion));
-  }
-  // Annotate tensors with the buffer indices. This way, the buffer propagation
-  // pass can clean them up later.
-  int next_slice_index = 0;
-  absl::flat_hash_map<BufferAllocation::Slice, std::optional<int>>
-      slice_indices;
-  auto get_arg_attrs = [&](int index) -> absl::StatusOr<mlir::Attribute> {
-    if (!args) {
-      return builder.getDictionaryAttr({builder.getNamedAttr(
-          "xla.slice_index", builder.getIndexAttr(next_slice_index++))});
-    }
-
-    const auto& arg = args->args()[index];
-    SmallVector<mlir::NamedAttribute> attrs;
-    attrs.push_back(builder.getNamedAttr(
-        "xla.slice_index", builder.getIndexAttr(arg.llvm_arg_index())));
-    attrs.push_back(
-        builder.getNamedAttr(mlir::LLVM::LLVMDialect::getAlignAttrName(),
-                             builder.getIndexAttr(arg.alignment())));
-    attrs.push_back(builder.getNamedAttr(
-        mlir::LLVM::LLVMDialect::getDereferenceableAttrName(),
-        builder.getIndexAttr(arg.slice().size())));
-    if (!arg.written()) {
-      attrs.push_back(
-          builder.getNamedAttr("xla.invariant", builder.getUnitAttr()));
-    }
-    return builder.getDictionaryAttr(attrs);
-  };
-
-  SmallVector<mlir::Attribute> arg_attrs;
-  int arg_index = 0;
-  for (auto* param : fusion.operands()) {
-    param_types.push_back(
-        emitters::TensorShapeToMlirType(param->shape(), builder));
-    TF_ASSIGN_OR_RETURN(arg_attrs.emplace_back(), get_arg_attrs(arg_index++));
-  }
-
-  auto result_types = emitters::ShapeToMlirTypes(fusion.shape(), builder);
-  param_types.append(result_types.begin(), result_types.end());
-  TF_RETURN_IF_ERROR(ShapeUtil::ForEachSubshapeWithStatus(
-      fusion.shape(), [&](const auto& shape, const ShapeIndex& index) {
-        if (shape.IsArray()) {
-          TF_ASSIGN_OR_RETURN(arg_attrs.emplace_back(),
-                              get_arg_attrs(arg_index++));
-        }
-        return absl::OkStatus();
-      }));
-
-  builder.setInsertionPointToStart(module->getBody());
-  auto entry_func = builder.create<FuncOp>(
-      loc, entry_function_name,
-      mlir::FunctionType::get(&context, param_types, result_types),
-      /*sym_visibility=*/mlir::StringAttr{},
-      mlir::ArrayAttr::get(&context, arg_attrs),
-      /*res_attrs=*/mlir::ArrayAttr{});
-  entry_func->setAttr("xla.entry", mlir::UnitAttr::get(&context));
+  TF_ASSIGN_OR_RETURN(mlir::func::FuncOp entry_func,
+                      emitters::EmitKernelApi(
+                          *module, fusion, buffer_assignment,
+                          GetDefaultBufferAlignment(), entry_function_name));
   SetBackendKind(&context, entry_func, BackendKind::kGpu);
 
   TF_RETURN_IF_ERROR(EmitMlir(module.get(), entry_func, fusion));
@@ -549,14 +468,7 @@ absl::Status EmitterBase::EmitMlir(mlir::ModuleOp module, FuncOp entry_function,
         epilogue, subgraph_to_mlir_fn[&epilogue], call_targets));
   }
 
-  int index_bitwidth =
-      Needs64BitIndices(fusion.fused_instructions_computation()) ? 64 : 32;
-  mlir::OpBuilder b(module->getContext());
-  auto index_layout = mlir::DataLayoutEntryAttr::get(
-      b.getIndexType(), b.getI32IntegerAttr(index_bitwidth));
-  module->setAttr(
-      mlir::DLTIDialect::kDataLayoutAttrName,
-      mlir::DataLayoutSpecAttr::get(module->getContext(), {index_layout}));
+  emitters::SetIndexDataLayout(module, fusion);
 
   return EmitEntryFunction(computations, call_targets, entry_function, fusion);
 }
@@ -607,6 +519,7 @@ void AddXlaGpuOpsOptimizationPasses(mlir::OpPassManager& pm) {
 
 void AddLoopTransformationPasses(mlir::OpPassManager& pm,
                                  const se::DeviceDescription& device) {
+  pm.addNestedPass<FuncOp>(CreateLowerXlaSharedPass());
   pm.addNestedPass<FuncOp>(
       emitters::CreateLowerXlaToScfPass(device.threads_per_warp()));
   pm.addNestedPass<FuncOp>(CreateFuseLoopsPass());
@@ -675,6 +588,7 @@ void AddLoweringPasses(mlir::OpPassManager& pm,
     if (cc->has_fp8_support()) {
       pm.addPass(CreateConvertFloatAMDPass(*cc));
     }
+    pm.addPass(CreateRecoverExp2Pass());
   }
 
   pm.addPass(emitters::CreateExpandFloatOpsPass());

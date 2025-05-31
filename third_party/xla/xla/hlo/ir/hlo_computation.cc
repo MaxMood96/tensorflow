@@ -182,10 +182,6 @@ HloComputation::~HloComputation() {
     CHECK(FusionInstruction()->fused_instructions_computation() == this);
     FusionInstruction()->ClearCalledComputations();
   }
-  if (IsAsyncComputation()) {
-    CHECK(async_start_->async_wrapped_computation() == this);
-    async_start_->ClearCalledComputations();
-  }
   Cleanup();
   ClearCalledComputations();
 
@@ -906,9 +902,6 @@ HloComputation::ChannelDependencies HloComputation::ComputeChannelDependencies()
         std::optional<int64_t> channel_id = instruction->channel_id();
         if (channel_id) {
           Instructions& group = channel_groups[*channel_id];
-          for (const HloInstruction* group_inst : group) {
-            dependencies[group_inst].push_back(instruction);
-          }
           dependencies[instruction] = group;
           group.push_back(instruction);
         }
@@ -965,7 +958,7 @@ HloComputation::MakeInstructionPostOrderWithReshapeFirst() const {
   std::vector<HloInstruction*> frontier_std;
   std::vector<HloInstruction*> frontier_reshapes;
   std::vector<HloInstruction*> sorted;
-  absl::flat_hash_map<int, uint32_t> visitations;
+  absl::flat_hash_map<int, uint64_t> visitations;
   sorted.reserve(instruction_count());
   visitations.reserve(instruction_count());
 
@@ -1011,8 +1004,8 @@ HloComputation::MakeInstructionPostOrderWithReshapeFirst() const {
     sorted.push_back(inst);
     for (HloInstruction* const child : inst->operands()) {
       // Will increment, or set to 1 if not present
-      visitations[child->unique_id()]++;
-      if (child->user_count() == visitations[child->unique_id()]) {
+      visitations[child->unique_id_64_bits()]++;
+      if (child->user_count() == visitations[child->unique_id_64_bits()]) {
         add_to_frontier(child);
       }
     }
@@ -1215,7 +1208,7 @@ HloComputationProto HloComputation::ToProto() const {
     HloInstructionProto instruction_proto = instruction->ToProto();
     proto.add_instructions()->Swap(&instruction_proto);
   }
-  proto.set_root_id(root_instruction()->unique_id());
+  proto.set_root_id(root_instruction()->unique_id_64_bits());
   *proto.mutable_program_shape() = ComputeProgramShape().ToProto();
   proto.set_is_fusion_computation(IsFusionComputation());
   proto.set_execution_thread(IsMainThread() ? ""
@@ -1453,9 +1446,11 @@ absl::StatusOr<HloInstruction*> HloComputation::DeepCopyHelper(
     return instruction;
   }
 
-  // Array shape.
-  TF_RET_CHECK(instruction->shape().IsArray());
-  return copy_leaf(instruction, *index, this);
+  HloInstruction* copy = copy_leaf(instruction, *index, this);
+  // We shouldn't copy buffers.
+  TF_RET_CHECK(instruction->shape().IsArray() ||
+               (instruction->shape().IsBuffer() && copy == instruction));
+  return copy;
 }
 
 absl::StatusOr<HloInstruction*> HloComputation::DeepCopyInstruction(
@@ -1659,7 +1654,8 @@ absl::StatusOr<bool> HloComputation::ReplaceInstructionWithDifferentShape(
     new_instruction->set_frontend_attributes(
         old_instruction->frontend_attributes());
   }
-  MoveOriginalValue(old_instruction, new_instruction);
+
+  new_instruction->CopyOriginalValue(old_instruction, /*clone=*/false);
 
   // Like the metadata above, if the user didn't specify any sharding
   // information on the new instruction we should copy the old sharding

@@ -572,9 +572,13 @@ absl::StatusOr<std::shared_ptr<LockableGpuClique::Lock>> AcquireGpuClique(
 
   // We enable resource sharing between parent and split communicators by
   // default because that's the only reason why we use comm splitting.
+  //
+  // TODO(mwhittaker): Make some of these flags.
   GpuCollectives::Config config;
   config.split_share = true;
   config.max_nchannels = max_nchannels;
+  config.blocking_communicators = true;
+  config.async_execution = false;
 
   if (enable_nccl_comm_splitting) {
     for (auto& [acquired_clique_key, acquired_clique] : acquired_cliques) {
@@ -590,6 +594,23 @@ absl::StatusOr<std::shared_ptr<LockableGpuClique::Lock>> AcquireGpuClique(
   return InitializeGpuClique(collectives, device, run_id, clique_key,
                              clique_id_callback, num_local_participants, rank,
                              config);
+}
+
+absl::Status AbortAllCliques() {
+  VLOG(1) << "Aborting all GPU cliques";
+  ProcessGpuCliques& cliques = GetProcessGpuCliques();
+  absl::MutexLock lock(&cliques.mu);
+  absl::Status result;
+  for (auto& [clique_key, lockable_clique] : cliques.map) {
+    VLOG(1) << "Aborting GPU clique " << clique_key.ToString();
+    if (absl::Status s = lockable_clique.Abort(); !s.ok()) {
+      LOG(ERROR) << "Error aborting GPU clique " << clique_key.ToString()
+                 << ": " << s;
+      result = std::move(s);
+    }
+  }
+  cliques.map.clear();
+  return result;
 }
 
 }  // namespace xla::gpu
