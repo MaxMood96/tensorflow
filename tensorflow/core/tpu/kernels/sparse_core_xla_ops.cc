@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tpu/kernels/sparse_core_xla_ops.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -26,6 +27,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -33,6 +35,7 @@ limitations under the License.
 #include "xla/hlo/builder/lib/slicing.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
+#include "xla/layout_util.h"
 #include "xla/literal_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -42,6 +45,7 @@ limitations under the License.
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/macros.h"
 #include "xla/tsl/platform/statusor.h"
+#include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/op_requires.h"
@@ -499,6 +503,10 @@ class XlaSparseDenseMatmulCustomCombinerOnTcWithCsrInputOp
 
     xla::FrontendAttributes tc_frontend_attributes;
     xla::FrontendAttributes sc_frontend_attributes;
+    xla::FrontendAttributes tuple_frontend_attributes;
+
+    tuple_frontend_attributes.mutable_map()->insert(
+        {"_xla_compute_type", "sparse"});
 
     sc_frontend_attributes.mutable_map()->insert(
         {"_xla_compute_type", "sparse"});
@@ -548,14 +556,19 @@ class XlaSparseDenseMatmulCustomCombinerOnTcWithCsrInputOp
         xla::ShapeUtil::MakeTupleShape(
             {valencies_shape, vectors_shape, gains_shape}));
 
+    // Emit get-tuple-element with the sparse core device frontend attribute.
+    // This is necessary for XLA to fuse the SparseCore custom call and the
+    // gte's to avoid accidentally introducing nested tuples.
+    builder->SetFrontendAttributes(tuple_frontend_attributes);
+
+    xla::XlaOp valencies = xla::GetTupleElement(sc_lookup_result_tuple, 0);
+    xla::XlaOp vectors = xla::GetTupleElement(sc_lookup_result_tuple, 1);
+
     // Emit the custom combiner computation into an HLO computation.
     OP_REQUIRES_VALUE(xla::XlaComputation custom_combiner_tc_computation, ctx,
                       BuildTcCustomCombinerComputation(ctx, feature_width));
 
     builder->SetFrontendAttributes(tc_frontend_attributes);
-
-    xla::XlaOp valencies = xla::GetTupleElement(sc_lookup_result_tuple, 0);
-    xla::XlaOp vectors = xla::GetTupleElement(sc_lookup_result_tuple, 1);
 
     std::vector<xla::XlaOp> tc_combiner_args = {valencies, vectors};
     if (num_weights_ > 0) {
@@ -717,7 +730,7 @@ class XlaSparseDenseMatmulGradWithCsrInputBase : public XlaOpKernel {
     builder->SetFrontendAttributes(tuple_frontend_attributes);
 
     // Updated embedding table.
-    for (int i = 0; i < tables_shape.tuple_shapes_size(); ++i) {
+    for (int i = 0; i < tables_shape.tuple_shapes().size(); ++i) {
       ctx->SetOutput(i, xla::GetTupleElement(updated_tables, i));
     }
 
@@ -744,6 +757,7 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
     const NameAttrList* name_attr;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("custom_computation", &name_attr));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("table_name", &table_name_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("T", &table_dtype_));
 
     // Try to get the number of sparsecores per chip from topology. And fall
     // back to the attribute if the topology is not available.
@@ -825,13 +839,23 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
 
     std::vector<XlaCompiler::Argument> arguments(num_arguments);
 
-    // For all the arguments, we use the float type and the shape is
+    // For tables and slot variables, we use the derived type and the shape is
     // {1, feature_width}.
+    xla::PrimitiveType table_primitive_type;
+    OP_REQUIRES_OK(
+        ctx, DataTypeToPrimitiveType(table_dtype_, &table_primitive_type));
+
     for (int32_t i = 0; i < num_arguments; ++i) {
       arguments[i].kind = XlaCompiler::Argument::kParameter;
-      arguments[i].type = DT_FLOAT;
-      arguments[i].shape =
-          xla::ShapeUtil::MakeShape(xla::F32, {1, feature_width});
+      if (i > 0 && i < tables_inputs.size() + 1) {
+        arguments[i].type = table_dtype_;
+        arguments[i].shape =
+            xla::ShapeUtil::MakeShape(table_primitive_type, {1, feature_width});
+      } else {
+        arguments[i].type = DT_FLOAT;
+        arguments[i].shape =
+            xla::ShapeUtil::MakeShape(xla::F32, {1, feature_width});
+      }
     }
 
     CHECK_OK(compiler->CompileFunction(options, custom_computation_, arguments,
@@ -860,7 +884,8 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
     xla_tables_shapes.reserve(tables_shapes.size());
     for (const auto& table_shape : tables_shapes) {
       xla_tables_shapes.push_back(xla::ShapeUtil::MakeShape(
-          xla::F32, {table_shape.dim_size(0), table_shape.dim_size(1)}));
+          table_primitive_type,
+          {table_shape.dim_size(0), table_shape.dim_size(1)}));
     }
 
     xla::Shape tables_shape = xla::ShapeUtil::MakeTupleShape(xla_tables_shapes);
@@ -895,7 +920,7 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
     builder->SetFrontendAttributes(tuple_frontend_attributes);
 
     // Updated embedding table.
-    for (int i = 0; i < tables_shape.tuple_shapes_size(); ++i) {
+    for (int i = 0; i < tables_shape.tuple_shapes().size(); ++i) {
       ctx->SetOutput(i, xla::GetTupleElement(updated_tables, i));
     }
 
@@ -904,6 +929,7 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
 
  private:
   std::string table_name_;
+  DataType table_dtype_;
   NameAttrList custom_computation_;
   int64_t num_sparsecores_per_device_;
   XlaSparseDenseMatmulGradWithCsrInputOp(
@@ -1200,12 +1226,12 @@ class XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputBase
     // Get the shape of the gradient.
     OP_REQUIRES_VALUE(xla::Shape activation_shape, ctx,
                       ctx->InputXlaShape("activation_gradients"));
-    OP_REQUIRES(
-        ctx,
-        activation_shape.is_static() && activation_shape.dimensions_size() == 2,
-        absl::InvalidArgumentError(absl::StrCat(
-            "activations input has non static or non-rank 2 shape: ",
-            activation_shape.ToString())));
+    OP_REQUIRES(ctx,
+                activation_shape.is_static() &&
+                    activation_shape.dimensions().size() == 2,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "activations input has non static or non-rank 2 shape: ",
+                    activation_shape.ToString())));
     OP_REQUIRES_VALUE(int64_t num_sparsecores_per_device, ctx,
                       GetSparseCoresPerLogicalDevice());
     int64_t num_samples_per_chip = activation_shape.dimensions(0);
@@ -2520,5 +2546,125 @@ class XlaSparseDenseMatmulGradWithAdagradMomentumAndStaticBufferSizeOp
 REGISTER_XLA_OP(
     Name("XlaSparseDenseMatmulGradWithAdagradMomentumAndStaticBufferSize"),
     XlaSparseDenseMatmulGradWithAdagradMomentumAndStaticBufferSizeOp);
+
+class XlaSparseActivationsUnstackOp : public XlaOpKernel {
+ public:
+  explicit XlaSparseActivationsUnstackOp(OpKernelConstruction* ctx)
+      : XlaOpKernel(ctx) {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("sample_counts", &sample_counts_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("features", &features_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("interleaved", &interleaved_));
+  }
+
+  ~XlaSparseActivationsUnstackOp() override = default;
+
+  void Compile(XlaOpKernelContext* ctx) override {
+    xla::XlaBuilder* builder = ctx->builder();
+
+    xla::XlaOp stacked_activations = ctx->Input("stacked_activations");
+
+    OP_REQUIRES_VALUE(xla::Shape stacked_activations_shape, ctx,
+                      ctx->InputXlaShape("stacked_activations"));
+    *stacked_activations_shape.mutable_layout() =
+        xla::LayoutUtil::MakeLayout({1, 0});
+    xla::Shape unstacked_activations_tuple_shape =
+        xla::ShapeUtil::MakeTupleShape({});
+    for (int i = 0; i < features_.size(); ++i) {
+      xla::PrimitiveType type = ctx->output_xla_type(i);
+      xla::Shape unstacked_activation_shape =
+          xla::ShapeUtil::MakeShape(type, {sample_counts_[i], features_[i]});
+      *unstacked_activation_shape.mutable_layout() =
+          xla::LayoutUtil::MakeLayout({0, 1});
+      *unstacked_activations_tuple_shape.add_tuple_shapes() =
+          std::move(unstacked_activation_shape);
+    }
+
+    std::string custom_call_target = interleaved_
+                                         ? "SparseActivationsUnstackInterleaved"
+                                         : "SparseActivationsUnstack";
+    xla::XlaOp unstacked_activations = xla::CustomCallWithLayout(
+        builder,
+        /*call_target_name=*/custom_call_target,
+        /*operands=*/{stacked_activations},
+        /*shape_with_layout=*/unstacked_activations_tuple_shape,
+        /*operand_shapes_with_layout=*/{stacked_activations_shape});
+
+    for (int i = 0; i < features_.size(); ++i) {
+      ctx->SetOutput(i, xla::GetTupleElement(unstacked_activations, i));
+    }
+  }
+
+ private:
+  TF_DISALLOW_COPY_AND_ASSIGN(XlaSparseActivationsUnstackOp);
+
+  std::vector<int> sample_counts_;
+  std::vector<int> features_;
+  bool interleaved_;
+};
+
+REGISTER_XLA_OP(Name("XlaSparseActivationsUnstack"),
+                XlaSparseActivationsUnstackOp);
+
+class XlaSparseGradientsStackOp : public XlaOpKernel {
+ public:
+  explicit XlaSparseGradientsStackOp(OpKernelConstruction* ctx)
+      : XlaOpKernel(ctx) {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("num_tables", &num_tables_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("interleaved", &interleaved_));
+  }
+
+  ~XlaSparseGradientsStackOp() override = default;
+
+  void Compile(XlaOpKernelContext* ctx) override {
+    xla::XlaBuilder* builder = ctx->builder();
+
+    std::vector<xla::XlaOp> unstacked_gradients(num_tables_);
+    for (int i = 0; i < num_tables_; ++i) {
+      unstacked_gradients[i] = ctx->Input(i);
+    }
+
+    int stacked_samples = 0;
+    int padded_feature = 0;
+    std::vector<xla::Shape> unstacked_gradients_shapes;
+    for (int i = 0; i < num_tables_; ++i) {
+      OP_REQUIRES_VALUE(xla::Shape unstacked_gradient_shape, ctx,
+                        ctx->InputXlaShape(i));
+      stacked_samples += unstacked_gradient_shape.dimensions(0);
+      padded_feature =
+          std::max<int>(padded_feature, unstacked_gradient_shape.dimensions(1));
+      *unstacked_gradient_shape.mutable_layout() =
+          xla::LayoutUtil::MakeLayout({0, 1});
+      unstacked_gradients_shapes.push_back(std::move(unstacked_gradient_shape));
+    }
+    padded_feature = xla::RoundUpTo(padded_feature, 8);
+
+    xla::PrimitiveType type = ctx->output_xla_type(0);
+    xla::Shape stacked_gradients_shape =
+        xla::ShapeUtil::MakeShape(type, {stacked_samples, padded_feature});
+    *stacked_gradients_shape.mutable_layout() =
+        xla::LayoutUtil::MakeLayout({1, 0});
+
+    std::string custom_call_target = interleaved_
+                                         ? "SparseGradientsStackInterleaved"
+                                         : "SparseGradientsStack";
+    xla::XlaOp stacked_gradients = xla::CustomCallWithLayout(
+        builder,
+        /*call_target_name=*/custom_call_target,
+        /*operands=*/{unstacked_gradients},
+        /*shape_with_layout=*/stacked_gradients_shape,
+        /*operand_shapes_with_layout=*/unstacked_gradients_shapes);
+
+    ctx->SetOutput(0, stacked_gradients);
+  }
+
+ private:
+  TF_DISALLOW_COPY_AND_ASSIGN(XlaSparseGradientsStackOp);
+
+  int num_tables_;
+  bool interleaved_;
+};
+
+REGISTER_XLA_OP(Name("XlaSparseGradientsStack"), XlaSparseGradientsStackOp);
+
 }  // anonymous namespace
 }  // namespace tensorflow

@@ -26,6 +26,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "xla/tests/xla_test_backend_predicates.h"
 #include <gtest/gtest.h>
 #include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
@@ -311,7 +312,10 @@ XLA_TEST_P(ReduceWindowTest, PrimeWindowsInReductionDimension) {
                            DefaultErrorSpec());
 }
 
-XLA_TEST_P(ReduceWindowTest, OVERSIZE_ON_GRM(ReduceAlongLaneDimension)) {
+XLA_TEST_P(ReduceWindowTest, ReduceAlongLaneDimension) {
+  if (test::HasModifiers({test::kGrm})) {
+    GTEST_SKIP();
+  }
   Array4D<float> input_array(19, 17, 8, 256);
   input_array.FillWithMinorDimNum();
 
@@ -899,8 +903,10 @@ INSTANTIATE_TEST_CASE_P(
 
 class R4ReduceWindowLargeTest : public R4ReduceWindowTest {};
 
-XLA_TEST_P(R4ReduceWindowLargeTest,
-           OVERSIZE_ON_GRM(DISABLED_ON_INTERPRETER(DoIt))) {
+XLA_TEST_P(R4ReduceWindowLargeTest, DoIt) {
+  if (test::DeviceIs(test::kInterpreter) || test::HasModifiers({test::kGrm})) {
+    GTEST_SKIP();
+  }
   DoIt();
 }
 
@@ -1105,7 +1111,12 @@ INSTANTIATE_TEST_CASE_P(
 
 class R3ReduceWindowLargeTest : public R3ReduceWindowTest {};
 
-XLA_TEST_P(R3ReduceWindowLargeTest, OVERSIZE_ON_GRM(DoIt)) { DoIt(); }
+XLA_TEST_P(R3ReduceWindowLargeTest, DoIt) {
+  if (test::HasModifiers({test::kGrm})) {
+    GTEST_SKIP();
+  }
+  DoIt();
+}
 
 // Test cases that are large/slow/failed.
 const R3ReduceWindowTestData kR3ReduceWindowLargeTestValues[] = {
@@ -1601,7 +1612,7 @@ INSTANTIATE_TEST_CASE_P(
 // results on the interpreter backend.
 class ReduceWindowTextTest : public HloTestBase {};
 
-XLA_TEST_F(ReduceWindowTextTest, R2General256x384) {
+TEST_F(ReduceWindowTextTest, R2General256x384) {
   const std::string hlo_string = R"(
 HloModule R2Window
 mul {
@@ -1618,7 +1629,7 @@ ENTRY R2Window {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.001}));
 }
 
-XLA_TEST_F(ReduceWindowTextTest, R2General256x384Layout01) {
+TEST_F(ReduceWindowTextTest, R2General256x384Layout01) {
   const std::string hlo_string = R"(
 HloModule R2Window
 mul {
@@ -1635,7 +1646,7 @@ ROOT reduce-window = f32[256,384]{0,1} reduce-window(operand, constant), window=
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.001}));
 }
 
-XLA_TEST_F(ReduceWindowTextTest, R2General2x5) {
+TEST_F(ReduceWindowTextTest, R2General2x5) {
   const std::string hlo_string = R"(
 HloModule R2Window
 mul {
@@ -1652,7 +1663,7 @@ ENTRY R2Window {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.001}));
 }
 
-XLA_TEST_F(ReduceWindowTextTest, R2EffectiveScalar) {
+TEST_F(ReduceWindowTextTest, R2EffectiveScalar) {
   const std::string hlo_string = R"(
 HloModule R2Window
 mul {
@@ -1670,7 +1681,7 @@ ENTRY R2Window {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.001}));
 }
 
-XLA_TEST_F(ReduceWindowTextTest, R3EffectiveScalar) {
+TEST_F(ReduceWindowTextTest, R3EffectiveScalar) {
   const std::string hlo_string = R"(
 HloModule R3Window
 mul {
@@ -1691,7 +1702,7 @@ ENTRY R3Window {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.001}));
 }
 
-XLA_TEST_F(HloTestBase, ReduceWindowIdentity) {
+TEST_F(HloTestBase, ReduceWindowIdentity) {
   const std::string hlo_string = R"(
 HloModule ReduceWindowIdentity
 identity.pad_to_reduce_window {
@@ -1711,7 +1722,7 @@ ENTRY reduce-window-identity {
   EXPECT_TRUE(RunAndCompare(hlo_string, std::nullopt));
 }
 
-XLA_TEST_F(HloTestBase, ReduceWindowIdentityNoPadding) {
+TEST_F(HloTestBase, ReduceWindowIdentityNoPadding) {
   const std::string hlo_string = R"(
 HloModule ReduceWindowIdentity
 identity.pad_to_reduce_window {
@@ -1731,7 +1742,7 @@ ENTRY reduce-window-identity {
   EXPECT_TRUE(RunAndCompare(hlo_string, std::nullopt));
 }
 
-XLA_TEST_F(HloTestBase, ReduceWindowS32) {
+TEST_F(HloTestBase, ReduceWindowS32) {
   const std::string hlo_string = R"(
 HloModule reduce-window
 
@@ -1750,7 +1761,7 @@ ENTRY %reduce-window (parameter.0: s32[81,8], parameter.1: s32[]) -> s32[82,8] {
   EXPECT_TRUE(RunAndCompare(hlo_string, std::nullopt));
 }
 
-XLA_TEST_F(HloTestBase, ReduceWindowS64) {
+TEST_F(HloTestBase, ReduceWindowS64) {
   const std::string hlo_string = R"(
 HloModule reduce-window
 
@@ -1769,7 +1780,7 @@ ENTRY %reduce-window (parameter.0: s64[81,8], parameter.1: s64[]) -> s64[82,8] {
   EXPECT_TRUE(RunAndCompare(hlo_string, std::nullopt));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_TPU(ReduceWindowS4)) {
+TEST_F(HloTestBase, DISABLED_ON_TPU(ReduceWindowS4)) {
   const std::string hlo_string = R"(
 HloModule reduce-window
 
@@ -1788,7 +1799,7 @@ ENTRY %reduce-window (parameter.0: s4[81,8], parameter.1: s4[]) -> s4[82,8] {
   EXPECT_TRUE(RunAndCompare(hlo_string, std::nullopt));
 }
 
-XLA_TEST_F(HloTestBase, ReduceWindowF16) {
+TEST_F(HloTestBase, ReduceWindowF16) {
   const std::string hlo_string = R"(
 HloModule reduce-window
 
@@ -1807,7 +1818,7 @@ ENTRY %reduce-window (parameter.0: f16[81,8], parameter.1: f16[]) -> f16[82,8] {
   EXPECT_TRUE(RunAndCompare(hlo_string, std::nullopt));
 }
 
-XLA_TEST_F(ReduceWindowTextTest, R4OnlyDilation) {
+TEST_F(ReduceWindowTextTest, R4OnlyDilation) {
   const std::string hlo_string = R"(
 HloModule R4OnlyDilation
 mul {
@@ -1827,7 +1838,10 @@ ENTRY R4OnlyDilation {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.001}));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_GPU(ReduceWindowVariadicSupport)) {
+TEST_F(HloTestBase, ReduceWindowVariadicSupport) {
+  if (test::DeviceIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const char* const hlo_string = R"(
 HloModule module
 
@@ -1854,7 +1868,10 @@ ENTRY entry {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_GPU(ReduceWindowVariadicSupport2)) {
+TEST_F(HloTestBase, ReduceWindowVariadicSupport2) {
+  if (test::DeviceIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const char* const hlo_string = R"(
 HloModule module
 
@@ -1880,7 +1897,10 @@ ENTRY entry {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_GPU(ReduceWindowVariadicSupport3)) {
+TEST_F(HloTestBase, ReduceWindowVariadicSupport3) {
+  if (test::DeviceIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const char* const hlo_string = R"(
 HloModule module
 
@@ -1906,7 +1926,10 @@ ENTRY entry {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_GPU(ReduceWindowVariadicSupport4)) {
+TEST_F(HloTestBase, ReduceWindowVariadicSupport4) {
+  if (test::DeviceIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const char* const hlo_string = R"(
 HloModule module
 
@@ -1932,7 +1955,10 @@ ENTRY entry {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_GPU(ReduceWindowS64Support)) {
+TEST_F(HloTestBase, ReduceWindowS64Support) {
+  if (test::DeviceIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const char* const hlo_string = R"(
 HloModule jit_dilated_window_sum.10
 
@@ -1952,7 +1978,10 @@ ENTRY %jit_dilated_window_sum.10 (parameter.1: s64[8,10,12]) -> (s64[8,10,12]) {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_GPU(ReduceWindowS64Support2)) {
+TEST_F(HloTestBase, ReduceWindowS64Support2) {
+  if (test::DeviceIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const char* const hlo_string = R"(
 HloModule SyncTensorsGraph.43
 
@@ -2009,7 +2038,10 @@ ENTRY %SyncTensorsGraph.43 (p0.1: f32[], p1.7: pred[3,3]) -> (pred[]) {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
 }
 
-XLA_TEST_F(HloTestBase, DISABLED_ON_GPU(VariadicWithNonTrivialWindows)) {
+TEST_F(HloTestBase, VariadicWithNonTrivialWindows) {
+  if (test::DeviceIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const char* const hlo_string = R"(
     HloModule m
 

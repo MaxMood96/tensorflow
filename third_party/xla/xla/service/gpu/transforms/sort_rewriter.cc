@@ -230,9 +230,10 @@ std::optional<SortComputationAnalysis> AnalyzeSortOp(
 
 // Create runner for CUB sort operation.
 absl::StatusOr<std::unique_ptr<CubSortRunnerInterface>> CreateRunner(
-    const SortComputationAnalysis& sort_analysis) {
-  return CubSortRunnerInterface::Create(sort_analysis.key_type,
-                                        sort_analysis.value_type);
+    const SortComputationAnalysis& sort_analysis,
+    absl::string_view platform_name) {
+  return CubSortRunnerInterface::Create(
+      sort_analysis.key_type, sort_analysis.value_type, platform_name);
 }
 
 // Restore the result shape after sorting a pair of tensors.
@@ -344,6 +345,44 @@ bool IsCubSortFasterOnH100(int bitwidth, int batch_size, int num_elements,
   }
 }
 
+bool IsCubSortFasterOnA100(int bitwidth, int batch_size, int num_elements,
+                           int sm_count) {
+  // The numbers below are based on extensive benchmarks: see
+  // b/410480351#comment4 for more details.
+  switch (bitwidth) {
+    case 8:
+      return batch_size == 1 ||
+             (num_elements > 1000 && (batch_size > 5 || num_elements < 43000));
+    case 16:
+      return (batch_size == 1 && num_elements > (1 << 16)) ||
+             (batch_size > 9 && num_elements > (1 << 17)) ||
+             (batch_size > 13 && num_elements > (1 << 16)) ||
+             (batch_size > 13 && num_elements > (1 << 15)) ||
+             (batch_size > 13 && num_elements > (1 << 14)) ||
+             (batch_size > 13 && num_elements > (1 << 13)) ||
+             (batch_size > 27 && num_elements > (1 << 12)) ||
+             (batch_size > 54 && num_elements > (1 << 11));
+    case 32:
+      return (batch_size == 1 && num_elements > (2 << 14)) ||
+             (batch_size > 24 && num_elements > (1 << 17)) ||
+             (batch_size > 30 && num_elements > (1 << 16)) ||
+             (batch_size > 36 && num_elements > (1 << 15)) ||
+             (batch_size > 39 && num_elements > (1 << 14)) ||
+             (batch_size > 52 && num_elements > (1 << 13)) ||
+             (batch_size > 144 && num_elements > (1 << 12));
+    case 64:
+      return (batch_size == 1 && num_elements > (1 << 16)) ||
+             (batch_size > 46 && num_elements > (1 << 17)) ||
+             (batch_size > 55 && num_elements > (1 << 16)) ||
+             (batch_size > 72 && num_elements > (1 << 15)) ||
+             (((batch_size > 138 && batch_size <= 2 * sm_count) ||
+               (batch_size > 289)) &&
+              num_elements > (1 << 14));
+    default:
+      return false;
+  }
+}
+
 // Returns whether a compatible sort should be rewritten based on the current
 // sort mode and possibly a heuristic.
 bool ShouldRewriteCompatibleSort(se::DeviceDescription device_description,
@@ -364,14 +403,18 @@ bool ShouldRewriteCompatibleSort(se::DeviceDescription device_description,
       int bitwidth = primitive_util::BitWidth(operand_shape.element_type());
       int batch_size = Product(operand_shape.dimensions()) / num_elements;
 
+      if (cuda_cc->IsBlackwell()) {
+        // TODO(b/410480351): Verify that the H100 heuristic also works well for
+        // Blackwell or implement a custom heuristic.
+        return IsCubSortFasterOnH100(bitwidth, batch_size, num_elements,
+                                     device_description.core_count());
+      }
       if (cuda_cc->IsHopper()) {
         return IsCubSortFasterOnH100(bitwidth, batch_size, num_elements,
                                      device_description.core_count());
       }
       if (cuda_cc->IsAmpere()) {
-        // TODO(b/410480351): Verify that the H100 heuristic also works well for
-        // Ampere or implement a custom heuristic.
-        return IsCubSortFasterOnH100(bitwidth, batch_size, num_elements,
+        return IsCubSortFasterOnA100(bitwidth, batch_size, num_elements,
                                      device_description.core_count());
       }
     }
@@ -383,7 +426,8 @@ bool ShouldRewriteCompatibleSort(se::DeviceDescription device_description,
 }
 
 bool IsCubCompatibleSort(const se::DeviceDescription& device_description,
-                         const HloSortInstruction* sort_op) {
+                         const HloSortInstruction* sort_op,
+                         absl::string_view platform_name) {
   VLOG(1) << "Sort instruction: " << sort_op->name();
   if (sort_op->operand_count() != 1 && sort_op->operand_count() != 2) {
     VLOG(2) << "Unsupported operand count: " << sort_op->operand_count();
@@ -413,7 +457,7 @@ bool IsCubCompatibleSort(const se::DeviceDescription& device_description,
     VLOG(2) << "Only simple compare computations are supported";
     return false;
   }
-  if (!CreateRunner(*sort_analysis).ok()) {
+  if (!CreateRunner(*sort_analysis, platform_name).ok()) {
     VLOG(2) << "Unsupported operand types (no compiled CUB kernels): "
             << PrimitiveType_Name(sort_analysis->key_type) << " "
             << (sort_analysis->value_type.has_value()
@@ -438,7 +482,7 @@ absl::StatusOr<bool> SortRewriter::RunOnInstruction(
   int64_t batch_size = Product(operand_shape.dimensions()) /
                        operand_shape.dimensions(sort_op->sort_dimension());
 
-  TF_ASSIGN_OR_RETURN(auto runner, CreateRunner(sort_analysis));
+  TF_ASSIGN_OR_RETURN(auto runner, CreateRunner(sort_analysis, platform_name_));
   TF_ASSIGN_OR_RETURN(
       int64_t scratch_size,
       runner->GetScratchSize(Product(operand_shape.dimensions()), batch_size));
@@ -515,7 +559,8 @@ absl::StatusOr<bool> SortRewriter::RunOnComputation(
   std::vector<HloSortInstruction*> sort_ops;
   for (auto* inst : computation->instructions()) {
     HloSortInstruction* sort = DynCast<HloSortInstruction>(inst);
-    if (sort != nullptr && IsCubCompatibleSort(device_description_, sort)) {
+    if (sort != nullptr &&
+        IsCubCompatibleSort(device_description_, sort, platform_name_)) {
       sort_ops.push_back(sort);
     }
   }

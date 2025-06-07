@@ -41,7 +41,7 @@ InputBuffer::~InputBuffer() = default;
 
 absl::Status InputBuffer::FillBuffer() {
   absl::string_view data;
-  absl::Status s = file_->Read(file_pos_, size_, &data, buf());
+  absl::Status s = file_->Read(file_pos_, data, absl::MakeSpan(buf(), size_));
   if (data.data() != buf()) {
     memmove(buf(), data.data(), data.size());
   }
@@ -76,7 +76,7 @@ absl::Status InputBuffer::ReadLine(T* result) {
   if (!result->empty() && result->back() == '\r') {
     result->resize(result->size() - 1);
   }
-  if (errors::IsOutOfRange(s) && !result->empty()) {
+  if (absl::IsOutOfRange(s) && !result->empty()) {
     return absl::OkStatus();
   }
   return s;
@@ -123,7 +123,7 @@ absl::Status InputBuffer::ReadNBytes(int64_t bytes_to_read, char* result,
     pos_ += bytes_to_copy;
     *bytes_read += bytes_to_copy;
   }
-  if (errors::IsOutOfRange(status) &&
+  if (absl::IsOutOfRange(status) &&
       (*bytes_read == static_cast<size_t>(bytes_to_read))) {
     return absl::OkStatus();
   }
@@ -132,7 +132,7 @@ absl::Status InputBuffer::ReadNBytes(int64_t bytes_to_read, char* result,
 
 absl::Status InputBuffer::ReadVarint32Fallback(uint32* result) {
   absl::Status s = ReadVarintFallback(result, core::kMaxVarint32Bytes);
-  if (errors::IsDataLoss(s)) {
+  if (absl::IsDataLoss(s)) {
     return errors::DataLoss("Stored data is too large to be a varint32.");
   }
   return s;
@@ -140,7 +140,7 @@ absl::Status InputBuffer::ReadVarint32Fallback(uint32* result) {
 
 absl::Status InputBuffer::ReadVarint64Fallback(uint64* result) {
   absl::Status s = ReadVarintFallback(result, core::kMaxVarint64Bytes);
-  if (errors::IsDataLoss(s)) {
+  if (absl::IsDataLoss(s)) {
     return errors::DataLoss("Stored data is too large to be a varint64.");
   }
   return s;
@@ -182,7 +182,7 @@ absl::Status InputBuffer::SkipNBytes(int64_t bytes_to_skip) {
     bytes_skipped += bytes_to_advance;
     pos_ += bytes_to_advance;
   }
-  if (errors::IsOutOfRange(s) && bytes_skipped == bytes_to_skip) {
+  if (absl::IsOutOfRange(s) && bytes_skipped == bytes_to_skip) {
     return absl::OkStatus();
   }
   return s;
@@ -234,14 +234,15 @@ absl::Status InputBuffer::Hint(int64_t bytes_to_read) {
 
   // Read the remaining bytes from file.
   absl::string_view data;
-  absl::Status s = file_->Read(file_pos_, bytes_to_read, &data, limit_);
+  absl::Status s =
+      file_->Read(file_pos_, data, absl::MakeSpan(limit_, bytes_to_read));
   if (data.data() != limit_) {
     memmove(limit_, data.data(), data.size());
   }
   limit_ += data.size();
   file_pos_ += data.size();
 
-  if (errors::IsOutOfRange(s) && data.size() == bytes_to_read) {
+  if (absl::IsOutOfRange(s) && data.size() == bytes_to_read) {
     return absl::OkStatus();
   } else {
     return s;

@@ -159,7 +159,7 @@ absl::StatusOr<bool> ReduceWindowRewriter::TryOptimizeCumSumOrProd(
 
   // Try to find the scan axis. We expect all window dimensions to be trivial,
   // except for one.
-  int64_t rank = operand_shape.dimensions_size();
+  int64_t rank = operand_shape.dimensions().size();
   const Window& window = reduce_window->window();
   int64_t scan_dim_num = -1;
   for (int i = 0; i < rank; ++i) {
@@ -445,7 +445,6 @@ absl::StatusOr<bool> ReduceWindowRewriter::TryOptimizeCumSumOrProd(
         auto reduce_function_root =
             reduce_window->to_apply()->root_instruction();
         if (reduce_function_root->shape().IsTuple()) {
-          TF_RET_CHECK(reduce_function_root->opcode() == HloOpcode::kTuple);
           // This corresponds to step 7: combining the inner scan with the outer
           // scan using a map function.
           auto* map_computation_root = reduce_function_root->operand(idx);
@@ -531,7 +530,7 @@ absl::StatusOr<bool> ReduceWindowRewriter::Run(
         continue;
       }
 
-      if (reduce_window->inputs().front()->shape().dimensions_size() != 1) {
+      if (reduce_window->inputs().front()->shape().dimensions().size() != 1) {
         continue;
       }
       TF_RETURN_IF_ERROR(ReplaceReduceWindowWithReshape(reduce_window));

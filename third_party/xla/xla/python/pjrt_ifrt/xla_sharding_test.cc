@@ -105,7 +105,15 @@ TEST_P(HloShardingTest, IsFullyReplicated) {
     EXPECT_FALSE(sharding->IsFullyReplicated());
   }
   {
-    // Maximal HloSharding is not fully replicated.
+    // Maximal HloSharding with a single device is fully replicated.
+    auto device_list = GetDevices({0});  // This sharding uses 1 device.
+    auto xla_hlo_sharding = xla::HloSharding::AssignDevice(/*device_id=*/0);
+    std::shared_ptr<const HloSharding> sharding =
+        HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
+    EXPECT_TRUE(sharding->IsFullyReplicated());
+  }
+  {
+    // Maximal HloSharding with more than one device is not fully replicated.
     auto xla_hlo_sharding = xla::HloSharding::AssignDevice(/*device_id=*/0);
     std::shared_ptr<const HloSharding> sharding =
         HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
@@ -818,6 +826,23 @@ TEST_P(HloShardingTest, DisassembleWithSubgroupMaximalSlowPath) {
       EXPECT_EQ(*sharding, *SingleDeviceSharding::Create(
                                device_list->devices()[i], MemoryKind()));
     }
+  }
+}
+
+TEST_P(HloShardingTest, IndexDomainsWithTileTranspose) {
+  auto device_list = GetDevices({0, 1, 2, 3});
+  auto xla_hlo_sharding =
+      xla::HloSharding::IotaTile(/*tile_assignment_dims=*/{2, 2},
+                                 /*reshape_dims=*/{2, 2},
+                                 /*transpose_perm=*/{1, 0});
+  std::shared_ptr<const HloSharding> sharding =
+      HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
+  Shape shape({4, 4});
+  {
+    TF_ASSERT_OK_AND_ASSIGN(auto index_domains, sharding->IndexDomains(shape));
+    EXPECT_THAT(index_domains,
+                ElementsAreArray(TEST_HloShardingIndexDomainsSlowPath(
+                    *sharding, shape, SingleDeviceShardSemantics::kAllShards)));
   }
 }
 

@@ -28,6 +28,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
@@ -57,16 +58,39 @@ limitations under the License.
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/Instrumentation/DataFlowSanitizer.h"
 #include "xla/backends/cpu/codegen/cpu_features.h"
 #include "xla/backends/cpu/codegen/polynomial_approximations.h"
+#include "xla/codegen/math/math_compiler_lib.h"
+#include "xla/codegen/math_lib.h"
 #include "xla/service/cpu/cpu_options.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/util.h"
+#include "xla/xla.pb.h"
 #include "tsl/platform/cpu_info.h"
 
 namespace xla::cpu {
+
+void SetXlaCpuBackendOptions(llvm::Module& llvm_module,
+                             const LlvmKernelOptions& options) {
+  std::vector<std::string> llvm_kernel_options;
+  if (options.optimize_for_size()) {
+    llvm_kernel_options.emplace_back(options::kXlaOptimizeForSizeCpuOption);
+  }
+  if (options.disable_loop_unrolling()) {
+    llvm_kernel_options.emplace_back(options::kDisableLoopUnrolling);
+  }
+  if (options.slp_vectorizer_disabled()) {
+    llvm_kernel_options.emplace_back(options::kDisableSlpVectorizer);
+  }
+
+  llvm::MDString* options_mdstring = llvm::MDString::get(
+      llvm_module.getContext(), absl::StrJoin(llvm_kernel_options, ","));
+  llvm_module.addModuleFlag(llvm::Module::Error, "xla_backend_extra_options",
+                            options_mdstring);
+}
 
 static llvm::OptimizationLevel GetOptimizationLevel(
     IrCompiler::Options options) {
@@ -105,8 +129,8 @@ static std::unique_ptr<HloModuleConfig> ParseXlaBackendExtraOptions(
 // of the proto should be ignored since they're just the default values.
 // We could instead return an unordered_map<str, str>, but we already have
 // helpers that expect a DebugOptions, so this ends up being simpler.
-static absl::Nullable<std::unique_ptr<HloModuleConfig>>
-GetXlaBackendExtraOptions(const llvm::Module& llvm_module) {
+static absl_nullable std::unique_ptr<HloModuleConfig> GetXlaBackendExtraOptions(
+    const llvm::Module& llvm_module) {
   llvm::Metadata* md = llvm_module.getModuleFlag("xla_backend_extra_options");
   if (md == nullptr) return nullptr;
   auto* md_string = llvm::dyn_cast<llvm::MDString>(md);
@@ -116,8 +140,9 @@ GetXlaBackendExtraOptions(const llvm::Module& llvm_module) {
 }
 
 static llvm::PipelineTuningOptions GetPipelineTuningOptions(
-    const llvm::Module& module, IrCompiler::Options options) {
-  auto pto_from_options = [](const IrCompiler::Options opts) {
+    const llvm::Module& module, IrCompiler::Options options,
+    const llvm::TargetMachine* target_machine) {
+  auto pto_from_options = [&](const IrCompiler::Options opts) {
     llvm::PipelineTuningOptions pto;
     pto.LoopVectorization = !opts.optimize_for_size;
     pto.SLPVectorization =
@@ -126,6 +151,23 @@ static llvm::PipelineTuningOptions GetPipelineTuningOptions(
 
     // TODO(b/411125413): Re-enable SLPVectorization once the LLVM bug is fixed.
     pto.SLPVectorization = false;
+
+    // TODO(b/419635451): Without AVX512 loop unrolling leads to LLVM generating
+    // enormous IR that later times out during code generation (AVX2 doesn't
+    // have masked SIMD instructions, and control flow ends up vectorizing to a
+    // lot of scalar loads and stores, which takes forever to codegen in machine
+    // instruction selection). As a workaround, disable loop unrolling when
+    // AVX512 and AVX2 are not available. Revisit this decision once we migrate
+    // to new fusion emitters that do not rely on LLVM that much.
+    //
+    // This test cannot only check for AVX512, because it makes numerical tests
+    // flaky depending on what machine the test is run on.
+    auto target_features = target_machine->getTargetFeatureString();
+    if (target_features.contains("+avx") &&
+        !target_features.contains("+avx2") &&
+        !target_features.contains("+avx512")) {
+      pto.LoopUnrolling = false;
+    }
 
     return pto;
   };
@@ -280,7 +322,8 @@ llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> IrCompiler::operator()(
 
 llvm::Error IrCompiler::RunIrPasses(llvm::Module& module,
                                     llvm::TargetMachine* target_machine) const {
-  llvm::PipelineTuningOptions pto = GetPipelineTuningOptions(module, options_);
+  llvm::PipelineTuningOptions pto =
+      GetPipelineTuningOptions(module, options_, target_machine);
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
   llvm::CGSCCAnalysisManager cgam;
@@ -298,6 +341,8 @@ llvm::Error IrCompiler::RunIrPasses(llvm::Module& module,
       std::make_unique<llvm::TargetLibraryInfoImpl>(target_triple);
   target_library_info_impl->addVectorizableFunctions(
       PolynomialApproximationsVectorization());
+  codegen::MathFunctionLib math_lib;
+  target_library_info_impl->addVectorizableFunctions(math_lib.Vectorizations());
 
   fam.registerPass(
       [&] { return llvm::TargetLibraryAnalysis(*target_library_info_impl); });
@@ -340,12 +385,17 @@ llvm::Error IrCompiler::RunIrPasses(llvm::Module& module,
     if (llvm::verifyModule(module, &error_stream)) {
       return llvm::make_error<llvm::StringError>(
           llvm::errc::invalid_argument,
-          absl::StrFormat("Invalid LLVM IR after optimizations:\n%s",
+          absl::StrFormat("Invalid LLVM IR after optimizations:\n%s\n",
                           error_stream.str()));
     }
   }
 
+  auto replaced_functions = math_lib.RewriteMathFunctions(module);
   RewriteToPolynomialApproximations(&module, options_.fast_math_flags);
+  if (!replaced_functions.empty()) {
+    codegen::math::RemoveFromCompilerUsed(module, replaced_functions);
+    codegen::math::RunInlineAndOptPasses(module);
+  }
 
   return llvm::Error::success();
 }

@@ -1,5 +1,6 @@
 """Provides build configuration for TSL"""
 
+load("@rules_python//python:py_library.bzl", "py_library")
 load("@bazel_skylib//lib:new_sets.bzl", "sets")
 load(
     "@local_config_cuda//cuda:build_defs.bzl",
@@ -222,7 +223,6 @@ def if_nccl(if_true, if_false = []):
     return select({
         clean_dep("//xla/tsl:no_nccl_support"): if_false,
         clean_dep("//xla/tsl:windows"): if_false,
-        clean_dep("//xla/tsl:arm_any"): if_false,
         "//conditions:default": if_true,
     })
 
@@ -817,7 +817,7 @@ def tsl_pybind_extension_opensource(
         testonly = testonly,
     )
 
-    native.py_library(
+    py_library(
         name = name,
         data = select({
             clean_dep("//xla/tsl:windows"): [pyd_file],
