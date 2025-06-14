@@ -44,7 +44,7 @@ class ExtractI32At<int i> : NativeCodeCall<
 // Use the tensor type information from $0 and convert min $1, max $2 and
 // numBits $3 and narrowRange $4 to a QuantizedType.
 def ConvertToQuantTypeFromAttrs : NativeCodeCall<
-    "quant::GetQuantizedTypeAttr($_builder, $0.getType(), $1, $2, -1, $3, $4, /*is_signed=*/false)">;
+    "GetQuantizedTypeAttr($_builder, $0.getType(), $1, $2, -1, $3, $4, /*is_signed=*/false)">;
 
 // Converts an integer attribute $0 to 32-bit with builder.
 def convertIntAttrTo32Bit : NativeCodeCall<
@@ -312,6 +312,10 @@ def LegalizeSlice : Pat<(TF_SliceOp $input, $begin, $size),
                         (TFL_SliceOp $input, $begin, $size)>;
 def LegalizeSoftmax : Pat<(TF_SoftmaxOp $arg),
                           (TFL_SoftmaxOp $arg, ConstF32Attr<"1.0">)>;
+def LegalizeSoftsign : Pat<(TF_SoftsignOp $arg0),
+    (TFL_DivOp $arg0, (TFL_AddOp (TFL_AbsOp $arg0),
+                (Arith_ConstantOp ConstantAttr<RankedF32ElementsAttr<[]>, "1.0f">),
+                TFL_AF_None), TFL_AF_None)>;
 def LegalizeSoftPlus : Pat<(TF_SoftplusOp F32Tensor:$arg0),
     (TFL_LogOp (TFL_AddOp (TFL_ExpOp $arg0),
                 (Arith_ConstantOp ConstantAttr<RankedF32ElementsAttr<[]>, "1.0f">),

@@ -18,7 +18,7 @@ cc_library(
     compatible_with = get_compatible_with_portable(),
     visibility = ["//visibility:private"],
     deps = [
-        "//third_party/python_runtime:headers",
+        "@local_xla//third_party/python_runtime:headers",
     ] + if_portable(
         if_false = [
             "//learning/brain/google/monitoring:metrics_exporter",
@@ -36,16 +36,12 @@ pybind_extension(
     pytype_srcs = [
         "_pywrap_tensorflow_lite_metrics_wrapper.pyi",
     ],
-    visibility = [
-        "__subpackages__",
-        "//tensorflow/python:__pkg__",
-        "//tensorflow/tools/pip_package:__subpackages__",
-    ],
+    visibility = ["//visibility:public"],
     deps = [
         ":metrics_wrapper_lib",
         "//tensorflow/python/lib/core:pybind11_lib",
-        "//third_party/python_runtime:headers",
         "@com_google_protobuf//:protobuf",
+        "@local_xla//third_party/python_runtime:headers",
         "@pybind11",
     ],
 )

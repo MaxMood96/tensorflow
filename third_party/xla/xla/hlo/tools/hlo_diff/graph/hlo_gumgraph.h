@@ -50,7 +50,7 @@ class HloGumgraph {
   // Instantiates a HloGumgraph from a HloModule, pre-processing and caching
   // various graph properties such as height, siblings per node etc.
   static absl::StatusOr<std::unique_ptr<const HloGumgraph>> Create(
-      absl::Nonnull<const HloModule*> hlo_module,
+      const HloModule* absl_nonnull hlo_module,
       const HloGumgraphFingerprintOptions& fingerprint_options = {});
 
   // HloGumgraph is neither copyable nor movable as it can be really large.
@@ -66,7 +66,7 @@ class HloGumgraph {
   // Returns graph node corresponding to the given HloInstruction. Returns
   // nullptr if the instruction is not in the graph.
   inline HloInstructionNode* GetNode(
-      absl::Nonnull<const HloInstruction*> instruction) const {
+      const HloInstruction* absl_nonnull instruction) const {
     if (auto it = instruction_to_node_.find(instruction);
         it != instruction_to_node_.end()) {
       return it->second.get();
@@ -115,6 +115,17 @@ class HloGumgraph {
             {.instruction = nullptr, .unique_node_index = 0, .is_root = true}),
         call_graph_(std::move(call_graph)),
         hlo_value_tracing_(std::move(hlo_value_tracing)) {}
+
+  // Connects the provided callsite instruction to the called computation by
+  // connecting the  computation's parameters with the operands of the callsite
+  // instructions. This can be thought of as inlining the called computation at
+  // the callsite.
+  absl::Status ConnectCalledComputation(
+      const HloInstruction::InstructionVector& callsite_operands,
+      const HloInstruction::InstructionVector& called_computation_parameters);
+
+  // Connects the provided node to its operands.
+  absl::Status ConnectOperands(HloInstructionNode* node);
 
   // Adds a HloInstructionNode for the given HloInstruction to the graph.
   // Returns a pair of the node and a boolean indicating whether the node was

@@ -345,7 +345,7 @@ ml::GEPOp CreateGep(TypedValue<mlir::RankedTensorType> tensor,
   auto llvm_element_type = converter.convertType(element_type);
   auto gep =
       b.create<ml::GEPOp>(ptr, llvm_element_type, tensor_ptr, linear_index);
-  gep.setInbounds(true);
+  gep.setNoWrapFlags(mlir::LLVM::GEPNoWrapFlags::inbounds);
   return gep;
 }
 
@@ -383,8 +383,12 @@ struct RewriteTensorExtract : OpRewritePattern<mlir::tensor::ExtractOp> {
           b.create<mlir::arith::SelectOp>(is_low_nibble, load, high_value));
     }
 
-    rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(op, op.getType(),
-                                                            load);
+    if (op.getType().isIntOrFloat()) {
+      rewriter.replaceOpWithNewOp<arith::BitcastOp>(op, op.getType(), load);
+    } else {
+      rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(op, op.getType(),
+                                                              load);
+    }
     return success();
   }
 };
@@ -511,8 +515,10 @@ struct RewriteTensorInsert : OpRewritePattern<mlir::tensor::InsertOp> {
       mlir::LLVMTypeConverter converter(getContext());
       auto llvm_type = converter.convertType(scalar_value.getType());
       scalar_value =
-          b.create<UnrealizedConversionCastOp>(llvm_type, scalar_value)
-              .getResult(0);
+          scalar_value.getType().isIntOrFloat()
+              ? b.create<arith::BitcastOp>(llvm_type, scalar_value)
+              : b.create<UnrealizedConversionCastOp>(llvm_type, scalar_value)
+                    .getResult(0);
       b.create<ml::StoreOp>(scalar_value, gep);
       op.replaceAllUsesWith(op.getDest());
     }
@@ -620,19 +626,21 @@ ml::GlobalOp CreateGlobalOp(mlir::Attribute value,
   // Needed to support complex element type.
   mlir::LLVMTypeConverter converter(b.getContext());
   auto llvm_element_type = converter.convertType(element_type);
-  if (value && element_type.isIntOrFloat() &&
+  if (element_type.isIntOrFloat() &&
       element_type.getIntOrFloatBitWidth() == 4) {
     num_elements = CeilOfRatio<int64_t>(num_elements, 2);
     llvm_element_type = b.getI8Type();
-    auto unpacked_data =
-        mlir::cast<mlir::DenseElementsAttr>(value).getRawData();
-    std::vector<char> packed_data(num_elements);
-    absl::Span<char> packed_data_span =
-        absl::MakeSpan(packed_data.data(), packed_data.size());
-    PackIntN(4, unpacked_data, packed_data_span);
-    value = mlir::DenseElementsAttr::getFromRawBuffer(
-        mlir::RankedTensorType::get({num_elements}, llvm_element_type),
-        packed_data);
+    if (value) {
+      auto unpacked_data =
+          mlir::cast<mlir::DenseElementsAttr>(value).getRawData();
+      std::vector<char> packed_data(num_elements);
+      absl::Span<char> packed_data_span =
+          absl::MakeSpan(packed_data.data(), packed_data.size());
+      PackIntN(4, unpacked_data, packed_data_span);
+      value = mlir::DenseElementsAttr::getFromRawBuffer(
+          mlir::RankedTensorType::get({num_elements}, llvm_element_type),
+          packed_data);
+    }
   }
   auto array_ty = ml::LLVMArrayType::get(llvm_element_type, num_elements);
   std::string name;
@@ -758,7 +766,7 @@ bool IsAtomicIntegral(Type element_type) {
 Value CreateBitcast(mlir::ImplicitLocOpBuilder& b, mlir::Operation* op,
                     Value value, Type ty) {
   if (value.getType().isIntOrFloat() && ty.isIntOrFloat()) {
-    return b.create<ml::BitcastOp>(ty, value);
+    return b.create<arith::BitcastOp>(ty, value);
   }
 
   mlir::LLVMTypeConverter converter(b.getContext());
@@ -948,11 +956,11 @@ class RewriteAtomicRMW : public OpRewritePattern<AtomicRMWOp> {
                                   vector_type.getElementType());
     auto outputType =
         ml::LLVMStructType::getLiteral(b.getContext(), outputTypes);
-    b.create<ml::InlineAsmOp>(loc, outputType, asm_operands, asm_string,
-                              constraints,
-                              /*has_side_effects=*/true,
-                              /*is_align_stack=*/true, asmDialectAttr,
-                              /*operand_attrs=*/mlir::ArrayAttr());
+    b.create<ml::InlineAsmOp>(
+        loc, outputType, asm_operands, asm_string, constraints,
+        /*has_side_effects=*/true,
+        /*is_align_stack=*/true, ml::TailCallKind::None, asmDialectAttr,
+        /*operand_attrs=*/mlir::ArrayAttr());
     return success();
   }
 
@@ -1073,7 +1081,7 @@ class RewriteAtomicRMW : public OpRewritePattern<AtomicRMWOp> {
 
     auto then_builder =
         OpBuilder::atBlockEnd(if_need_update.thenBlock(), b.getListener());
-    Value source_float_as_int = then_builder.create<ml::BitcastOp>(
+    Value source_float_as_int = then_builder.create<arith::BitcastOp>(
         loc, then_builder.getI32Type(), no_negative_nan_source);
     Value c0 = then_builder.create<ml::ConstantOp>(loc, b.getI32Type(), 0);
     Value is_not_negative = then_builder.create<ml::ICmpOp>(
@@ -1168,7 +1176,7 @@ class RewriteAtomicRMW : public OpRewritePattern<AtomicRMWOp> {
           rewriter.create<ml::ConstantOp>(loc, addr_int_ty, -1));
       addr = rewriter.create<ml::GEPOp>(loc, addr.getType(),
                                         rewriter.getI8Type(), addr, index,
-                                        /*inbounds=*/true);
+                                        mlir::LLVM::GEPNoWrapFlags::inbounds);
 
       // Calculate the bit shift (assume little-endianness).
       Value offset = rewriter.create<ml::TruncOp>(loc, atomic_ty, addr_offset);
@@ -1207,7 +1215,7 @@ class RewriteAtomicRMW : public OpRewritePattern<AtomicRMWOp> {
             Value short_value =
                 b.create<ml::TruncOp>(b.getIntegerType(result_size),
                                       b.create<ml::LShrOp>(old_value, shift));
-            input_value = b.create<ml::BitcastOp>(result_ty, short_value);
+            input_value = b.create<arith::BitcastOp>(result_ty, short_value);
           } else {
             input_value = CreateBitcast(b, op, old_value, result_ty);
           }
@@ -1223,7 +1231,7 @@ class RewriteAtomicRMW : public OpRewritePattern<AtomicRMWOp> {
           Value new_value;
           if (small_type) {
             Value cast_value = b.create<ml::ZExtOp>(
-                atomic_ty, b.create<ml::BitcastOp>(
+                atomic_ty, b.create<arith::BitcastOp>(
                                rewriter.getIntegerType(result_size), result));
             new_value =
                 b.create<ml::OrOp>(b.create<ml::AndOp>(old_value, mask),
