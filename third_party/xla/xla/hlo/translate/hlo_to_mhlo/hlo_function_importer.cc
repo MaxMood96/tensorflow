@@ -1021,11 +1021,18 @@ absl::StatusOr<mlir::Operation*> HloFunctionImporter::ImportInstructionImpl(
         const std::string& raw_backend_config =
             instruction->raw_backend_config_string();
         if (!raw_backend_config.empty()) {
-          llvm::SmallVector<NamedAttribute, 1> frontend_attributes;
           frontend_attributes.push_back(builder_->getNamedAttr(
               "backend_config", builder_->getStringAttr(raw_backend_config)));
-          call->setAttr(kFrontendAttributesAttr,
-                        builder_->getDictionaryAttr(frontend_attributes));
+          if (frontend_attributes.size() == 1) {
+            frontend_attributes_index = attributes.size();
+            attributes.push_back(builder_->getNamedAttr(
+                kFrontendAttributesAttr,
+                builder_->getDictionaryAttr(frontend_attributes)));
+          } else {
+            attributes[frontend_attributes_index] = builder_->getNamedAttr(
+                kFrontendAttributesAttr,
+                builder_->getDictionaryAttr(frontend_attributes));
+          }
         }
         for (auto attr : attributes) {
           call->setAttr(attr.getName(), attr.getValue());
@@ -2438,7 +2445,7 @@ absl::Status HloFunctionImporter::ConvertShapeToMlirLayout(
   }
   if (shape.IsTuple()) {
     std::vector<mlir::Attribute> tuple_layouts;
-    for (int i = 0; i < shape.tuple_shapes_size(); i++) {
+    for (int i = 0; i < shape.tuple_shapes().size(); i++) {
       TF_RETURN_IF_ERROR(
           ConvertShapeToMlirLayout(shape.tuple_shapes(i), flattened_attr));
     }

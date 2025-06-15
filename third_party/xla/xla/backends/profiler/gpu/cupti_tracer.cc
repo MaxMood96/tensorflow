@@ -96,7 +96,8 @@ inline void LogIfError(const absl::Status &status) {
       if (status == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES) {                  \
         return tsl::errors::PermissionDenied("CUPTI need root access!");    \
       } else {                                                              \
-        return tsl::errors::Internal("CUPTI call error", errstr);           \
+        return absl::InternalError(                                         \
+            absl::StrCat("CUPTI call error: ", errstr));                    \
       }                                                                     \
     }                                                                       \
   } while (false)
@@ -962,53 +963,6 @@ absl::Span<const uint32_t> GetCudaGraphTracingResourceCbids() {
 
 }  // namespace
 
-const char *GetTraceEventTypeName(const CuptiTracerEventType &type) {
-  // Do not use a default so that this gives a build error when
-  // CuptiTracerEventType is extended but this is not.
-  switch (type) {
-    case CuptiTracerEventType::MemcpyH2D:
-      return "MemcpyH2D";
-    case CuptiTracerEventType::MemcpyD2H:
-      return "MemcpyD2H";
-    case CuptiTracerEventType::MemcpyD2D:
-      return "MemcpyD2D";
-    case CuptiTracerEventType::MemcpyP2P:
-      return "MemcpyP2P";
-    case CuptiTracerEventType::MemcpyOther:
-      return "MemcpyOther";
-    case CuptiTracerEventType::Kernel:
-      return "Compute";
-    case CuptiTracerEventType::MemoryAlloc:
-      return "MemoryAlloc";
-    case CuptiTracerEventType::MemoryFree:
-      return "MemoryFree";
-    case CuptiTracerEventType::Memset:
-      return "Memset";
-    case CuptiTracerEventType::Overhead:
-      return "Overhead";
-    case CuptiTracerEventType::UnifiedMemory:
-      return "UnifiedMemory";
-    case CuptiTracerEventType::Generic:
-      return "Generic";
-    case CuptiTracerEventType::MemoryResidency:
-      return "MemoryResidency";
-    case CuptiTracerEventType::HostRegister:
-      return "HostRegister";
-    case CuptiTracerEventType::HostUnregister:
-      return "HostUnregister";
-    case CuptiTracerEventType::CudaGraph:
-      return "CudaGraph";
-    case CuptiTracerEventType::ThreadMarkerRange:
-      return "ThreadMarkerRange";
-    case CuptiTracerEventType::ThreadMarkerStart:
-      return "ThreadMarkerStart";
-    case CuptiTracerEventType::ThreadMarkerEnd:
-      return "ThreadMarkerEnd";
-    case CuptiTracerEventType::Unsupported:
-      return "";
-  }
-}
-
 CuptiTracer::CuptiTracer(CuptiInterface *cupti_interface)
     : num_gpus_(NumGpus()), cupti_interface_(cupti_interface) {}
 
@@ -1318,7 +1272,7 @@ absl::Status CuptiTracer::HandleDriverApiCallback(
     // API callback is called before any CUDA context is created.
     // This is expected to be rare, and we ignore this case.
     VLOG(3) << "API callback received before creation of CUDA context\n";
-    return tsl::errors::Internal("cutpi callback without context");
+    return absl::InternalError("cutpi callback without context");
   }
 
   // Grab a correct device ID.
@@ -1326,7 +1280,7 @@ absl::Status CuptiTracer::HandleDriverApiCallback(
   RETURN_IF_CUPTI_ERROR(
       cupti_interface_->GetDeviceId(cbdata->context, &device_id));
   if (device_id >= num_gpus_) {
-    return tsl::errors::Internal("Invalid device id:", device_id);
+    return absl::InternalError(absl::StrCat("Invalid device id:", device_id));
   }
 
   if (cbdata->callbackSite == CUPTI_API_ENTER) {
@@ -1425,7 +1379,7 @@ absl::Status CuptiTracer::ProcessActivityBuffer(CUcontext context,
     LOG(WARNING) << "CUPTI activity buffer is reclaimed after flush.";
     return absl::OkStatus();
   }
-  if (cupti_interface_->Disabled()) return tsl::errors::Internal("Disabled.");
+  if (cupti_interface_->Disabled()) return absl::InternalError("Disabled.");
 
   // Report dropped records.
   size_t dropped = 0;

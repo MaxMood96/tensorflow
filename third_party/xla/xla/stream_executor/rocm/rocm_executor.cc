@@ -287,8 +287,7 @@ absl::StatusOr<int64_t> GetMaxRegistersPerBlock(hipDevice_t device) {
 }
 
 absl::StatusOr<int64_t> GetThreadsPerWarp(hipDevice_t device) {
-  // TODO(ROCm): This is almost certainly wrong but tests seem to rely on it.
-  return 32;
+  return GetSimpleAttribute<int64_t>(device, hipDeviceAttributeWarpSize);
 }
 
 absl::Status GetGridLimits(int* x, int* y, int* z, hipDevice_t device) {
@@ -1010,6 +1009,7 @@ absl::StatusOr<DeviceMemoryBase> RocmExecutor::GetSymbol(
                    reinterpret_cast<uintptr_t>(module_handle.id()), ")"));
 }
 
+namespace {
 absl::Status FillBlockDimLimit(hipDevice_t device, BlockDim* block_dim_limit) {
   // The BlockDim name is a mismatch against these GRID_DIM_* queries because
   // we use BlockDims to express the dimensions of blocks within a grid
@@ -1023,6 +1023,7 @@ absl::Status FillBlockDimLimit(hipDevice_t device, BlockDim* block_dim_limit) {
   block_dim_limit->z = z;
   return absl::OkStatus();
 }
+}  // namespace
 
 absl::StatusOr<std::unique_ptr<Event>> RocmExecutor::CreateEvent() {
   TF_ASSIGN_OR_RETURN(auto event,

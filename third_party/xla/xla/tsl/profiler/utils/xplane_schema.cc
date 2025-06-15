@@ -42,6 +42,7 @@ const absl::string_view kScopeRangeIdTreePlaneName =
     "/host:__ScopeRangeCallStack__";
 const absl::string_view kTpuRuntimePlaneName = "/host:TPU-runtime";
 const absl::string_view kCuptiDriverApiPlaneName = "/host:CUPTI";
+const absl::string_view kCuptiActivityNvtxPlaneName = "/host:NVTX-CUPTI";
 const absl::string_view kRoctracerApiPlaneName = "/host:ROCTRACER";
 const absl::string_view kMetadataPlaneName = "/host:metadata";
 const absl::string_view kTFStreamzPlaneName = "/host:tfstreamz";
@@ -366,7 +367,9 @@ const StatTypeMap& GetStatTypeMap() {
        {"device_offset_ps", kDeviceOffsetPs},
        {"device_duration_ps", kDeviceDurationPs},
        {"scope_range_id", kScopeRangeId},
-       {"core_details", kCoreDetails}});
+       {"core_details", kCoreDetails},
+       // IFRT Stats
+       {"mlir_program", kMlIRProgram}});
   DCHECK_EQ(stat_type_map->size(), kNumStatTypes);
   return *stat_type_map;
 }

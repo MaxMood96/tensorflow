@@ -183,7 +183,8 @@ HloComputation* HloModule::AddComputationInternal(
     computation_name_uniquer_.GetUniqueName(computation->name());
     for (auto* instruction : computation->instructions()) {
       instruction_name_uniquer_.GetUniqueName(instruction->name());
-      next_unique_id_ = std::max(next_unique_id_, instruction->unique_id() + 1);
+      next_unique_id_ =
+          std::max(next_unique_id_, instruction->unique_id_64_bits() + 1);
     }
     if (next_unique_id_ < computation->unique_id() + 1) {
       next_unique_id_ = computation->unique_id() + 1;
@@ -594,6 +595,9 @@ HloModuleProto HloModule::ToProto() const {
     profile_info_proto.set_fingerprint(profile_info.fingerprint());
     profile_info_proto.set_profile_generation_strategy(
         profile_info.profile_generation_strategy());
+    profile_info_proto.set_original_changelist(
+        profile_info.original_changelist());
+    profile_info_proto.set_changelist(profile_info.changelist());
   }
   if (config().has_static_device_assignment()) {
     DeviceAssignmentProto device_assignment;
@@ -617,9 +621,9 @@ HloModuleProtoWithConfig HloModule::ToProtoWithConfig() const {
 absl::Status HloModule::CheckUniqueNamesAndIdsForComputationsAndInstructions()
     const {
   absl::flat_hash_set<absl::string_view> computation_names;
-  absl::flat_hash_set<int> computation_ids;
+  absl::flat_hash_set<int64_t> computation_ids;
   absl::flat_hash_set<absl::string_view> instruction_names;
-  absl::flat_hash_set<int> instruction_ids;
+  absl::flat_hash_set<int64_t> instruction_ids;
 
   for (const HloComputation* computation : computations()) {
     TF_RET_CHECK(!ContainsKey(computation_names, computation->name()))
@@ -635,9 +639,11 @@ absl::Status HloModule::CheckUniqueNamesAndIdsForComputationsAndInstructions()
           << "Instruction name is not unique: " << instruction->name();
       instruction_names.insert(instruction->name());
 
-      TF_RET_CHECK(!ContainsKey(instruction_ids, instruction->unique_id()))
-          << "Instruction id is not unique: " << instruction->unique_id();
-      instruction_ids.insert(instruction->unique_id());
+      TF_RET_CHECK(
+          !ContainsKey(instruction_ids, instruction->unique_id_64_bits()))
+          << "Instruction id is not unique: "
+          << instruction->unique_id_64_bits();
+      instruction_ids.insert(instruction->unique_id_64_bits());
     }
   }
   return absl::OkStatus();
@@ -655,7 +661,8 @@ absl::StatusOr<std::unique_ptr<HloModule>> HloModule::CreateFromProto(
   // the entry parameters and root.
   TF_RET_CHECK(proto.has_host_program_shape())
       << "No program shape found in the proto";
-  ProgramShape expected_program_shape(proto.host_program_shape());
+  TF_ASSIGN_OR_RETURN(ProgramShape expected_program_shape,
+                      ProgramShape::FromProto(proto.host_program_shape()));
   TF_RET_CHECK(expected_program_shape.parameters_size() ==
                module_config.entry_computation_layout().parameter_count());
   for (int i = 0; i < expected_program_shape.parameters_size(); ++i) {
@@ -880,7 +887,8 @@ absl::StatusOr<HloModuleConfig> HloModule::CreateModuleConfigFromProto(
     return tsl::errors::FailedPrecondition(
         "No program shape found in the proto");
   }
-  ProgramShape program_shape(module.host_program_shape());
+  TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
+                      ProgramShape::FromProto(module.host_program_shape()));
   TF_ASSIGN_OR_RETURN(HloModuleConfig config,
                       CreateModuleConfigFromShape(program_shape, debug_options,
                                                   execution_options));
@@ -1099,36 +1107,33 @@ std::vector<HloComputation*> HloModule::MakeComputationPostOrder(
                        post_order.end());
     }
     return post_order;
-  } else {
-    // The topological sort is a reverse post-order, reverse it so we get a
-    // post-order.
-    std::vector<HloComputation*> post_order;
-    post_order.reserve(computations_.size());
-    int num_computations = 0;
-    for (auto it = topological_sort_.rbegin(); it != topological_sort_.rend();
-         ++it) {
-      ++num_computations;
-      if (execution_threads.empty() ||
-          execution_threads.contains(it->execution_thread())) {
-        post_order.push_back(&*it);
-      }
+  }  // The topological sort is a reverse post-order, reverse it so we get a
+  // post-order.
+  std::vector<HloComputation*> post_order;
+  post_order.reserve(computations_.size());
+  int num_computations = 0;
+  for (auto it = topological_sort_.rbegin(); it != topological_sort_.rend();
+       ++it) {
+    ++num_computations;
+    if (execution_threads.empty() ||
+        execution_threads.contains(it->execution_thread())) {
+      post_order.push_back(&*it);
     }
-
-    if (num_computations != computations_.size()) {
-      for (HloComputation& computation : topological_sort_) {
-        LOG(ERROR) << "Reverse postorder: " << computation.name() << " ("
-                   << computation.parent()->name() << ")";
-      }
-      for (auto& computation : computations_) {
-        LOG(ERROR) << "Computations: " << computation->name() << " ("
-                   << computation->parent()->name() << ")";
-      }
-      LOG(FATAL) << "Mismatch computation count: post_order="
-                 << post_order.size()
-                 << " computation_count=" << computations_.size();
-    }
-    return post_order;
   }
+
+  if (num_computations != computations_.size()) {
+    for (HloComputation& computation : topological_sort_) {
+      LOG(ERROR) << "Reverse postorder: " << computation.name() << " ("
+                 << computation.parent()->name() << ")";
+    }
+    for (auto& computation : computations_) {
+      LOG(ERROR) << "Computations: " << computation->name() << " ("
+                 << computation->parent()->name() << ")";
+    }
+    LOG(FATAL) << "Mismatch computation count: post_order=" << post_order.size()
+               << " computation_count=" << computations_.size();
+  }
+  return post_order;
 }
 
 namespace {
@@ -1163,7 +1168,9 @@ void SortComputationsByContent(std::vector<HloComputation*>* computations) {
     }
     // Avoid computing fingerprints of (potentially) giant computation strings
     // just to compare when a == b
-    if (a == b) return false;
+    if (a == b) {
+      return false;
+    }
 
     return fingerprint_map.GetFingerprint(a) <
            fingerprint_map.GetFingerprint(b);

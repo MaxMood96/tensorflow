@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef XLA_SERVICE_COPY_INSERTION_H_
 #define XLA_SERVICE_COPY_INSERTION_H_
 
+#include <cstdint>
+
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -110,6 +112,10 @@ class CopyInsertion : public HloModulePass {
 
   // Adds copies for transitioning into and out of non-copyable values.
   absl::Status AddCopiesForNonCopyableTransitions(
+      const HloAliasAnalysis& alias_analysis, HloInstruction* chain_start);
+  // Adds copies for transitioning into and out of non-copyable values for a
+  // explicit non-copyable chain.
+  absl::Status AddCopiesForExplicitNonCopyableTransitions(
       const HloAliasAnalysis& alias_analysis, HloInstruction* chain_start);
 
   // Backend specific function that decides whether an instruction can share

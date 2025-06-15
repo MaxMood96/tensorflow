@@ -20,7 +20,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tpu_embedding_ops_registry.h"
 
 namespace mlir {
-namespace mhlo {
+namespace hlo {
 
 namespace {
 
@@ -346,6 +346,7 @@ bool IsOpTypeAllowedTf2XlaFallback(const TypeID& type_id) {
         TypeID::get<TF::XlaPadOp>(),
         TypeID::get<TF::XlaSetBoundOp>(),
         TypeID::get<TF::XlaSetDynamicDimensionSizeOp>(),
+        TypeID::get<TF::XlaSparseActivationsUnstackOp>(),
         TypeID::get<TF::XlaSparseCoreAdagradMomentumOp>(),
         TypeID::get<TF::XlaSparseCoreAdagradOp>(),
         TypeID::get<TF::XlaSparseCoreAdamOp>(),
@@ -383,6 +384,7 @@ bool IsOpTypeAllowedTf2XlaFallback(const TypeID& type_id) {
             TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithFtrlAndCsrInputOp>(),  // NOLINT
         TypeID::get<
             TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputOp>(),
+        TypeID::get<TF::XlaSparseGradientsStackOp>(),
         TypeID::get<TF::XlaSpmdFullToShardShapeOp>(),
         TypeID::get<TF::XlaSpmdShardToFullShapeOp>(),
         TypeID::get<TF::XlaSvdOp>(),
@@ -557,5 +559,5 @@ bool IsDynamicPadderOp(const TypeID& type_id) {
   return DynamicTensorflowOps().contains(type_id);
 }
 
-}  // namespace mhlo
+}  // namespace hlo
 }  // namespace mlir
