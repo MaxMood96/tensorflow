@@ -265,7 +265,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_cpu_use_acl(true);
 #endif
   opts.set_xla_cpu_use_xnnpack(true);
-  opts.set_xla_cpu_use_new_xtile_lowering(false);
+  opts.set_xla_cpu_use_new_xtile_lowering(true);
   opts.set_xla_cpu_experimental_xnn_graph_fusion_mode(
       DebugOptions::XNN_GRAPH_FUSION_MODE_DISABLED);
   opts.add_xla_cpu_experimental_ynn_fusion_type(
@@ -356,11 +356,13 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_enable_dynamic_slice_fusion(true);
   opts.set_xla_gpu_enable_dus_accumulator_zero_init_elimination(false);
   opts.set_xla_gpu_experimental_dynamic_slice_fusion_verify_offsets(false);
+  opts.set_xla_gpu_experimental_enable_dynamic_slice_table_offsets(false);
   opts.set_xla_gpu_nccl_termination_timeout_seconds(-1);
   opts.set_xla_gpu_enable_nccl_user_buffers(false);
   opts.set_xla_gpu_enable_nccl_user_buffers_in_default_space(false);
   opts.set_xla_gpu_enable_allocator_spatial_partitioning(true);
   opts.set_xla_gpu_experimental_enable_nccl_symmetric_buffers(false);
+  opts.set_xla_gpu_experimental_vmm_disabled(false);
   opts.set_xla_gpu_experimental_emit_collective_reduce(false);
   opts.set_xla_gpu_enable_nccl_comm_splitting(true);
   opts.set_xla_gpu_nccl_init_max_rank_per_root_ratio(0);
@@ -513,6 +515,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_executable_terminate_timeout_seconds(30);
   opts.set_xla_gpu_executable_warn_stuck_timeout_seconds(10);
   opts.set_xla_gpu_execution_terminate_timeout("inf");
+  opts.set_xla_gpu_device_execution_terminate_timeout("inf");
   opts.set_xla_gpu_execution_progress_tracking(0);
 
   opts.set_xla_gpu_first_collective_call_warn_stuck_timeout_seconds(20);
@@ -2368,6 +2371,14 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "annotated DynamicSliceConfig offsets match actual XLA-computed "
       "DS/DUS offsets. Adds D2H sync overhead — for debugging only."));
   flag_list->push_back(tsl::Flag(
+      "xla_gpu_experimental_enable_dynamic_slice_table_offsets",
+      bool_setter_for(
+          &DebugOptions::
+              set_xla_gpu_experimental_enable_dynamic_slice_table_offsets),
+      debug_options->xla_gpu_experimental_enable_dynamic_slice_table_offsets(),
+      "Enables DynamicSliceAnnotator to represent non-linear DS/DUS offsets "
+      "as a table with one entry per loop iteration."));
+  flag_list->push_back(tsl::Flag(
       "xla_gpu_nccl_termination_timeout_seconds",
       int64_setter_for(
           &DebugOptions::set_xla_gpu_nccl_termination_timeout_seconds),
@@ -3260,7 +3271,16 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       duration_setter_for(
           &DebugOptions::set_xla_gpu_execution_terminate_timeout),
       debug_options->xla_gpu_execution_terminate_timeout(),
-      "Set timeout for XLA:GPU execution to prevent undetected deadlocks"));
+      "Set timeout for host-side XLA:GPU execution "
+      "(inf to disable); does not wait for asynchronous device work"));
+
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_device_execution_terminate_timeout",
+      duration_setter_for(
+          &DebugOptions::set_xla_gpu_device_execution_terminate_timeout),
+      debug_options->xla_gpu_device_execution_terminate_timeout(),
+      "Set timeout to abort if enqueued XLA:GPU device work does not complete "
+      "after host dispatch (inf to disable)"));
 
   flag_list->push_back(tsl::Flag(
       "xla_gpu_execution_progress_tracking",
@@ -3331,7 +3351,8 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
           debug_options->xla_gpu_experimental_use_collective_kernels()),
       "Experimental: comma-separated filter of collective ops that should use "
       "custom kernels (e.g. Triton one-shot / two-shot) instead of NCCL. "
-      "Accepted values: ALL_REDUCE, ALL_GATHER (case-insensitive; the "
+      "Accepted values: ALL_REDUCE, ALL_GATHER, REDUCE_SCATTER "
+      "(case-insensitive; the "
       "COLLECTIVE_KERNEL_ prefix may be omitted). Supports +/- "
       "incremental modifiers (e.g. +ALL_REDUCE,-ALL_GATHER). The deprecated "
       "--xla_gpu_unsupported_use_all_reduce_one_shot_kernel flag also adds "
@@ -3732,6 +3753,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
           &DebugOptions::set_xla_gpu_experimental_scaled_dot_with_triton),
       debug_options->xla_gpu_experimental_scaled_dot_with_triton(),
       "If true, use the Triton emitter for scaled dot."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_experimental_vmm_disabled",
+      bool_setter_for(&DebugOptions::set_xla_gpu_experimental_vmm_disabled),
+      debug_options->xla_gpu_experimental_vmm_disabled(),
+      "If true, disables CUDA Virtual Memory Management (VMM) APIs for device "
+      "memory allocation and collective fusion."));
 
   flag_list->push_back(tsl::Flag(
       "xla_cpu_collective_call_warn_stuck_timeout_seconds",
